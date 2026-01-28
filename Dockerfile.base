@@ -17,7 +17,8 @@ COPY . .
 ARG CDN_URL
 RUN yarn build
 
-RUN yarn workspaces focus --production && \
+RUN yarn plugin import workspace-tools && \
+  yarn workspaces focus --production && \
   yarn cache clean
 
 ENV PORT=3000
