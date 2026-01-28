@@ -207,11 +207,13 @@ export type DocumentEvent = BaseEvent<Document> &
           | "documents.delete"
           | "documents.permanent_delete"
           | "documents.archive"
-          | "documents.restore";
+          | "documents.restore"
+          | "documents.index";
         documentId: string;
         collectionId: string;
         data?: {
           source?: "import";
+          force?: boolean;
         };
       }
     | {
@@ -234,6 +236,7 @@ export type DocumentEvent = BaseEvent<Document> &
         createdAt: string;
         data?: {
           done: boolean;
+          force?: boolean;
         };
       }
     | {

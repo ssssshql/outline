@@ -35,14 +35,17 @@ export function debugChangesetsPath(): string {
   return "/debug/changesets";
 }
 
+export function ragChatPath(): string {
+  return "/rag/chat";
+}
+
 export function settingsPath(...args: string[]): string {
   return "/settings" + (args.length > 0 ? `/${args.join("/")}` : "");
 }
 
 export function commentPath(document: Document, comment: Comment): string {
-  return `${documentPath(document)}?commentId=${comment.id}${
-    comment.isResolved ? "&resolved=1" : ""
-  }`;
+  return `${documentPath(document)}?commentId=${comment.id}${comment.isResolved ? "&resolved=1" : ""
+    }`;
 }
 
 export function collectionPath(

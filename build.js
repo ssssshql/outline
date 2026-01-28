@@ -4,6 +4,9 @@
 const { exec } = require("child_process");
 const { readdirSync, existsSync } = require("fs");
 
+const isWindows = process.platform === "win32";
+
+// @ts-ignore
 const getDirectories = (source) =>
   readdirSync(source, { withFileTypes: true })
     .filter((dirent) => dirent.isDirectory())
@@ -16,7 +19,9 @@ const getDirectories = (source) =>
  */
 function execAsync(cmd) {
   return new Promise((resolve, reject) => {
-    exec(cmd, (error, stdout, stderr) => {
+    // 在 Windows 上强制使用 bash（来自 Git for Windows）
+    const options = isWindows ? { shell: "bash" } : {};
+    exec(cmd, options, (error, stdout, stderr) => {
       if (error) {
         reject(error);
       } else {

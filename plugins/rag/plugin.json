@@ -1,0 +1,6 @@
+{
+    "id": "rag",
+    "name": "RAG (Retrieval-Augmented Generation)",
+    "description": "Provides intelligent document search and Q&A using vector embeddings and LLM",
+    "version": "1.0.0"
+}

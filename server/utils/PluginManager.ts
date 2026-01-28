@@ -94,8 +94,7 @@ export class PluginManager {
     if (process.send === undefined) {
       Logger.debug(
         "plugins",
-        `Plugin(type=${plugin.type}) registered ${
-          "name" in plugin.value ? plugin.value.name : ""
+        `Plugin(type=${plugin.type}) registered ${"name" in plugin.value ? plugin.value.name : ""
         } ${plugin.description ? `(${plugin.description})` : ""}`
       );
     }
@@ -121,11 +120,15 @@ export class PluginManager {
     }
     const rootDir = env.ENVIRONMENT === "test" ? "" : "build";
 
-    glob
-      .sync(path.join(rootDir, "plugins/*/server/!(*.test|schema).[jt]s"))
-      .forEach((filePath: string) => {
-        require(path.join(process.cwd(), filePath));
-      });
+    // Use forward slashes for glob pattern (works on all platforms)
+    const pattern = `${rootDir}/plugins/*/server/!(*.test|schema).[jt]s`.replace(
+      /\\/g,
+      "/"
+    );
+
+    glob.sync(pattern).forEach((filePath: string) => {
+      require(path.join(process.cwd(), filePath));
+    });
     this.loaded = true;
   }
 

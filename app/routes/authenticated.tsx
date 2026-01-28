@@ -22,6 +22,7 @@ import {
   matchCollectionSlug as collectionSlug,
   trashPath,
   debugPath,
+  ragChatPath,
 } from "~/utils/routeHelpers";
 import env from "~/env";
 
@@ -35,6 +36,7 @@ const Search = lazy(() => import("~/scenes/Search"));
 const Trash = lazy(() => import("~/scenes/Trash"));
 const Debug = lazy(() => import("~/scenes/Developer/Debug"));
 const Changesets = lazy(() => import("~/scenes/Developer/Changesets"));
+const RAGChat = lazy(() => import("~/scenes/RAGChat"));
 
 const RedirectDocument = ({
   match,
@@ -115,6 +117,7 @@ function AuthenticatedRoutes() {
             />
             <Route path={`/doc/${documentSlug}`} component={Document} />
             <Route exact path={`${searchPath()}/:query?`} component={Search} />
+            <Route exact path={ragChatPath()} component={RAGChat} />
             {env.isDevelopment && (
               <Route exact path={debugPath()} component={Debug} />
             )}
