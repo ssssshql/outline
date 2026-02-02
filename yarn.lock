@@ -4436,6 +4436,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@microsoft/fetch-event-source@npm:^2.0.1":
+  version: 2.0.1
+  resolution: "@microsoft/fetch-event-source@npm:2.0.1"
+  checksum: a50e1c0f33220206967266d0a4bbba0703e2793b079d9f6e6bfd48f71b2115964a803e14cf6e902c6fab321edc084f26022334f5eaacc2cec87f174715d41852
+  languageName: node
+  linkType: hard
+
 "@mixmark-io/domino@npm:^2.2.0":
   version: 2.2.0
   resolution: "@mixmark-io/domino@npm:2.2.0"
@@ -17752,6 +17759,7 @@ __metadata:
     "@langchain/openai": ^1.2.3
     "@langchain/textsplitters": ^1.0.1
     "@linear/sdk": ^58.1.0
+    "@microsoft/fetch-event-source": ^2.0.1
     "@node-oauth/oauth2-server": ^5.2.0
     "@notionhq/client": ^2.3.0
     "@octokit/auth-app": ^6.1.4

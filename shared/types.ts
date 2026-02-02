@@ -131,6 +131,7 @@ export enum IntegrationService {
   Linear = "linear",
   Figma = "figma",
   Notion = "notion",
+  Rag = "rag",
 }
 
 export type ImportableIntegrationService = Extract<

@@ -101,6 +101,7 @@ declare module "styled-components" {
       dusk: string;
       green: string;
       yellow: string;
+      dark: string
     };
   }
 

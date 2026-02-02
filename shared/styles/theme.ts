@@ -40,6 +40,7 @@ const defaultColors: Colors = {
     dusk: "#2930FF",
     green: "#3ad984",
     yellow: "#F5BE31",
+    dark: "#2F3336",
   },
 };
 

@@ -5,12 +5,18 @@ import auth from "@server/middlewares/authentication";
 import validate from "@server/middlewares/validate";
 import type { APIContext } from "@server/types";
 import Document from "@server/models/Document";
+import Integration from "@server/models/Integration";
+import { IntegrationService, IntegrationType } from "@shared/types";
 import { globalEventQueue } from "@server/queues";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import DocumentIndexProcessor from "../processors/DocumentIndexProcessor";
 import { VectorStoreService } from "../VectorStoreService";
 import { ChatService } from "../ChatService";
 import * as T from "./schema";
+
+interface RAGSettings {
+  RAG_OPENAI_API_KEY?: string;
+}
 
 const router = new Router();
 
@@ -29,6 +35,25 @@ router.post(
     async (ctx: APIContext<T.RagIndexDocumentReq>) => {
         const { content, metadata = {} } = ctx.input.body;
         const { user } = ctx.state.auth;
+
+        // Check if RAG is configured
+        const integration = await Integration.findOne({
+            where: {
+                teamId: user.teamId,
+                service: IntegrationService.Rag,
+                type: IntegrationType.Post,
+            },
+        });
+
+        const settings = integration?.settings as RAGSettings | undefined;
+
+        if (!settings?.RAG_OPENAI_API_KEY) {
+            ctx.body = {
+                success: false,
+                message: "RAG not configured",
+            };
+            return;
+        }
 
         const vectorStore = VectorStoreService.getInstance();
 
@@ -60,12 +85,34 @@ router.post(
         const { collectionId, teamId, force = false } = ctx.input.body;
         const { user } = ctx.state.auth;
 
+        const targetTeamId = teamId || user.teamId;
+
+        // Check if RAG is configured
+        const integration = await Integration.findOne({
+            where: {
+                teamId: targetTeamId,
+                service: IntegrationService.Rag,
+                type: IntegrationType.Post,
+            },
+        });
+
+        const settings = integration?.settings as RAGSettings | undefined;
+
+        if (!settings?.RAG_OPENAI_API_KEY) {
+            ctx.body = {
+                success: false,
+                message: "RAG not configured",
+                queued: 0,
+            };
+            return;
+        }
+
         const vectorStore = VectorStoreService.getInstance();
 
         // Build query conditions
         const where: Record<string, unknown> = {
             publishedAt: { [Op.ne]: null },
-            teamId: teamId || user.teamId,
+            teamId: targetTeamId,
         };
 
         if (collectionId) {
@@ -156,24 +203,9 @@ router.post(
     }
 );
 
-/**
- * Ask a question using RAG
- */
-router.post(
-    "rag.chat",
-    auth(),
-    validate(T.RagChatSchema),
-    async (ctx: APIContext<T.RagChatReq>) => {
-        const { question, k } = ctx.input.body;
 
-        const chatService = ChatService.getInstance();
-        const result = await chatService.answerQuestion(question, k);
 
-        ctx.body = {
-            data: result,
-        };
-    }
-);
+// ...
 
 /**
  * Stream answer to a question using RAG
@@ -183,23 +215,66 @@ router.post(
     auth(),
     validate(T.RagChatSchema),
     async (ctx: APIContext<T.RagChatReq>) => {
-        const { question, k, history } = ctx.input.body;
+        const { question, k, history, collectionIds } = ctx.input.body;
+        const { user } = ctx.state.auth;
 
-        // Set response headers for SSE
-        ctx.status = 200;
-        ctx.type = "text/event-stream";
-        ctx.set("Cache-Control", "no-cache");
-        ctx.set("Connection", "keep-alive");
-        ctx.set("X-Accel-Buffering", "no"); // Disable nginx buffering
+        Logger.info("plugins", `RAG: Starting chat stream for user ${user.id}`);
+
+        ctx.request.socket.setTimeout(0);
+        ctx.req.socket.setNoDelay(true);
+        ctx.req.socket.setKeepAlive(true);
+
+        ctx.respond = false;
+        ctx.res.statusCode = 200;
+        ctx.res.setHeader("Content-Type", "text/event-stream");
+        ctx.res.setHeader("Cache-Control", "no-cache");
+        ctx.res.setHeader("Connection", "keep-alive");
+        ctx.res.setHeader("X-Accel-Buffering", "no");
+        
+        ctx.res.flushHeaders();
 
         const chatService = ChatService.getInstance();
+        
+        const cleanup = () => {
+            if (!ctx.res.writableEnded) {
+                 ctx.res.end();
+            }
+        };
+        
+        ctx.req.on("close", cleanup);
+        ctx.req.on("finish", cleanup);
+        ctx.req.on("error", cleanup);
 
         try {
-            for await (const chunk of chatService.streamAnswer(question, k, history)) {
+            ctx.res.write(`: ping\n\n`);
+            if ((ctx.res as any).flush) (ctx.res as any).flush();
+            
+            Logger.debug("plugins", "RAG: Calling chatService.streamAnswer");
+            // Pass teamId to streamAnswer to allow loading team-specific settings
+            for await (const chunk of chatService.streamAnswer(question, k, history, collectionIds, user.teamId)) {
+                if (ctx.res.writableEnded || ctx.res.destroyed) break;
+
                 ctx.res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                if ((ctx.res as any).flush) (ctx.res as any).flush();
+            }
+            Logger.debug("plugins", "RAG: Stream completed successfully");
+        } catch (error) {
+            Logger.error("RAG chat stream failed", error as Error);
+            if (!ctx.res.writableEnded && !ctx.res.destroyed) {
+                ctx.res.write(
+                    `data: ${JSON.stringify({
+                        type: "error",
+                        data: (error as Error).message,
+                    })}\n\n`
+                );
             }
         } finally {
-            ctx.res.end();
+            if (!ctx.res.writableEnded && !ctx.res.destroyed) {
+                ctx.res.end();
+            }
+            ctx.req.off("close", cleanup);
+            ctx.req.off("finish", cleanup);
+            ctx.req.off("error", cleanup);
         }
     }
 );
@@ -216,7 +291,6 @@ router.post(
         const { user } = ctx.state.auth;
 
         const targetTeamId = teamId || user.teamId;
-        const env = await import("../env");
 
         // Get all indexed documents with their chunk counts
         const indexedDocsResult = await Document.sequelize!.query<{
@@ -230,7 +304,7 @@ router.post(
                 metadata->>'documentTitle' as "documentTitle",
                 COUNT(*) as chunks,
                 MAX(metadata->>'updatedAt') as "updatedAt"
-            FROM ${env.default.RAG_TABLE_NAME}
+            FROM rag_vectors
             WHERE metadata->>'teamId' = :teamId
             GROUP BY metadata->>'documentId', metadata->>'documentTitle'
             ORDER BY MAX(metadata->>'updatedAt') DESC`,
@@ -396,8 +470,6 @@ router.post(
         const { documentId } = ctx.input.body;
         const { user } = ctx.state.auth;
 
-        const env = await import("../env");
-
         // Get all chunks for this document
         const chunksResult = await Document.sequelize!.query<{
             id: string;
@@ -408,7 +480,7 @@ router.post(
                 id,
                 content as content,
                 metadata::text as metadata
-            FROM ${env.default.RAG_TABLE_NAME}
+            FROM rag_vectors
             WHERE metadata->>'documentId' = :documentId
             AND metadata->>'teamId' = :teamId
             ORDER BY id`,
@@ -433,6 +505,80 @@ router.post(
                 documentId,
                 chunks,
             },
+        };
+    }
+);
+
+
+
+/**
+ * Get RAG settings
+ */
+router.post(
+    "rag.settings.get",
+    auth(),
+    validate(T.RagGetSettingsSchema),
+    async (ctx: APIContext<T.RagGetSettingsReq>) => {
+        const { user } = ctx.state.auth;
+
+        const integration = await Integration.findOne({
+            where: {
+                teamId: user.teamId,
+                service: IntegrationService.Rag,
+                type: IntegrationType.Post, // Using 'post' as a generic type since we don't have 'settings' type
+            },
+        });
+
+        ctx.body = {
+            success: true,
+            data: integration?.settings || {},
+        };
+    }
+);
+
+/**
+ * Set RAG settings
+ */
+router.post(
+    "rag.settings.set",
+    auth(),
+    validate(T.RagSetSettingsSchema),
+    async (ctx: APIContext<T.RagSetSettingsReq>) => {
+        const { user } = ctx.state.auth;
+        const settings = ctx.input.body;
+
+        // Check if user is admin
+        if (!user.isAdmin) {
+            ctx.throw(403, "Only admins can configure RAG settings");
+        }
+
+        let integration = await Integration.findOne({
+            where: {
+                teamId: user.teamId,
+                service: IntegrationService.Rag,
+                type: IntegrationType.Post,
+            },
+        });
+
+        if (integration) {
+            integration.settings = {
+                ...integration.settings,
+                ...settings,
+            } as any;
+            await integration.save();
+        } else {
+            await Integration.create({
+                teamId: user.teamId,
+                userId: user.id,
+                service: IntegrationService.Rag,
+                type: IntegrationType.Post,
+                settings: settings as any,
+            });
+        }
+
+        ctx.body = {
+            success: true,
+            message: "Settings saved successfully",
         };
     }
 );

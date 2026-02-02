@@ -117,7 +117,7 @@ function AuthenticatedRoutes() {
             />
             <Route path={`/doc/${documentSlug}`} component={Document} />
             <Route exact path={`${searchPath()}/:query?`} component={Search} />
-            <Route exact path={ragChatPath()} component={RAGChat} />
+            <Route exact path={ragChatPath(":sessionId?")} component={RAGChat} />
             {env.isDevelopment && (
               <Route exact path={debugPath()} component={Debug} />
             )}

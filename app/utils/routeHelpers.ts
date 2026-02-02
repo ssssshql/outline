@@ -35,8 +35,8 @@ export function debugChangesetsPath(): string {
   return "/debug/changesets";
 }
 
-export function ragChatPath(): string {
-  return "/rag/chat";
+export function ragChatPath(sessionId?: string): string {
+  return "/rag/chat" + (sessionId ? `/${sessionId}` : "");
 }
 
 export function settingsPath(...args: string[]): string {

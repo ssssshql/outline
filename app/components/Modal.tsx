@@ -24,6 +24,7 @@ type Props = {
   style?: React.CSSProperties;
   width?: number | string;
   height?: number | string;
+  overflow?: string;
   onRequestClose: () => void;
 };
 
@@ -34,6 +35,7 @@ const Modal: React.FC<Props> = ({
   style,
   width,
   height,
+  overflow,
   onRequestClose,
 }: Props) => {
   const wasOpen = usePrevious(isOpen);
@@ -88,7 +90,7 @@ const Modal: React.FC<Props> = ({
                 column
                 reverse
               >
-                <DesktopContent style={style} topShadow>
+                <DesktopContent style={style} overflow={overflow} topShadow>
                   <ErrorBoundary component="div">{children}</ErrorBoundary>
                 </DesktopContent>
                 <Header>
@@ -222,7 +224,7 @@ const Wrapper = styled.div<{
 }>`
   animation: ${fadeAndScaleIn} 250ms ease;
 
-  margin: 25vh auto auto auto;
+  margin: 12vh auto auto auto;
   width: 75vw;
   min-width: 350px;
   max-width: ${(props) => props.$width || "450px"};

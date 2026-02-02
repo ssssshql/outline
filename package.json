@@ -6,7 +6,7 @@
   "scripts": {
     "clean": "rimraf build",
     "copy:i18n": "mkdir -p ./build/shared/i18n && cp -R ./shared/i18n/locales ./build/shared/i18n",
-    "build:i18n": "i18next --silent '{shared,app,server,plugins}/**/*.{ts,tsx}' && yarn copy:i18n",
+    "build:i18n": "i18next --silent && yarn copy:i18n",
     "build:server": "node ./build.js",
     "build": "yarn clean && yarn vite:build && yarn build:i18n && yarn build:server",
     "start": "node ./build/server/index.js",
@@ -89,6 +89,7 @@
     "@langchain/openai": "^1.2.3",
     "@langchain/textsplitters": "^1.0.1",
     "@linear/sdk": "^58.1.0",
+    "@microsoft/fetch-event-source": "^2.0.1",
     "@node-oauth/oauth2-server": "^5.2.0",
     "@notionhq/client": "^2.3.0",
     "@octokit/auth-app": "^6.1.4",

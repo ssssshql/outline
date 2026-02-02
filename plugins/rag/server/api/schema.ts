@@ -40,6 +40,7 @@ export const RagChatSchema = z.object({
     body: z.object({
         question: z.string().min(1, "Question is required"),
         k: z.number().int().min(1).max(20).optional(),
+        collectionIds: z.array(z.string()).optional(),
         history: z.array(z.object({
             role: z.enum(["user", "assistant"]),
             content: z.string()
@@ -64,3 +65,27 @@ export const RagDocumentChunksSchema = z.object({
 });
 
 export type RagDocumentChunksReq = z.infer<typeof RagDocumentChunksSchema>;
+
+export const RagGetSettingsSchema = z.object({
+    body: z.object({}),
+});
+
+export type RagGetSettingsReq = z.infer<typeof RagGetSettingsSchema>;
+
+export const RagSetSettingsSchema = z.object({
+    body: z.object({
+        RAG_OPENAI_API_KEY: z.string().optional(),
+        RAG_OPENAI_BASE_URL: z.string().optional(),
+        RAG_EMBEDDING_MODEL: z.string().optional(),
+        RAG_EMBEDDING_DIMENSIONS: z.any().optional(),
+        RAG_CHAT_MODEL: z.string().optional(),
+        RAG_CHAT_API_KEY: z.string().optional(),
+        RAG_CHAT_BASE_URL: z.string().optional(),
+        RAG_CHUNK_SIZE: z.any().optional(),
+        RAG_CHUNK_OVERLAP: z.any().optional(),
+        RAG_RETRIEVAL_K: z.any().optional(),
+        RAG_SCORE_THRESHOLD: z.any().optional(),
+    }),
+});
+
+export type RagSetSettingsReq = z.infer<typeof RagSetSettingsSchema>;

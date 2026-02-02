@@ -125,13 +125,12 @@ export default class DocumentIndexProcessor extends BaseProcessor {
                 return;
             }
 
-            // Convert document content to plain text with title included
-            // We prepend the title to ensure it's included in the vector embedding
-            // and has high weight in the similarity search.
-            const bodyText = DocumentHelper.toPlainText(document);
-            const plainText = `# ${document.title}\n\n${bodyText}`;
+            // Convert document content to plain text
+            const content = await DocumentHelper.toMarkdown(document, {
+                includeTitle: false,
+            });
 
-            if (!plainText || plainText.trim().length === 0) {
+            if (!content || content.trim().length === 0) {
                 Logger.info("plugins", `RAG: Skipping empty document ${documentId}`);
                 return;
             }
@@ -164,7 +163,7 @@ export default class DocumentIndexProcessor extends BaseProcessor {
             await this.removeDocument(documentId);
 
             // Index the document with metadata
-            await vectorStore.indexDocument(plainText, {
+            await vectorStore.indexDocument(content, {
                 documentId: document.id,
                 documentTitle: document.title,
                 collectionId: document.collectionId,

@@ -7,6 +7,8 @@ import { QueryTypes } from "sequelize";
 import { sequelize } from "@server/storage/database";
 import Logger from "@server/logging/Logger";
 import serverEnv from "@server/env";
+import Integration from "@server/models/Integration";
+import { IntegrationService, IntegrationType } from "@shared/types";
 import env from "./env";
 
 /**
@@ -14,9 +16,6 @@ import env from "./env";
  */
 export class VectorStoreService {
     private static instance: VectorStoreService;
-    private vectorStore: PGVectorStore | null = null;
-    private embeddings: OpenAIEmbeddings | null = null;
-    private textSplitter: RecursiveCharacterTextSplitter | null = null;
     private pool: Pool | null = null;
     private initialized = false;
 
@@ -33,7 +32,76 @@ export class VectorStoreService {
     }
 
     /**
-     * Initialize the vector store
+     * Get embeddings instance based on settings
+     */
+    private async getEmbeddings(settings: Record<string, any> = {}): Promise<OpenAIEmbeddings> {
+        const apiKey = settings.RAG_OPENAI_API_KEY;
+        const baseURL = settings.RAG_OPENAI_BASE_URL;
+        const model = settings.RAG_EMBEDDING_MODEL;
+
+        if (!apiKey) {
+            throw new Error("需要配置OpenAI API密钥才能进行会话");
+        }
+
+        return new OpenAIEmbeddings({
+            apiKey,
+            batchSize: 512,
+            model,
+            configuration: baseURL ? { baseURL } : undefined,
+        });
+    }
+
+    /**
+     * Get vector store instance based on settings
+     */
+    private async getVectorStore(settings: Record<string, any> = {}): Promise<PGVectorStore> {
+        if (!this.initialized) {
+            await this.initialize();
+        }
+
+        if (!this.pool) {
+            throw new Error("Database pool not initialized");
+        }
+
+        const embeddings = await this.getEmbeddings(settings);
+
+        return new PGVectorStore(embeddings, {
+            pool: this.pool,
+            tableName: "rag_vectors",
+            collectionName: "outline_documents",
+            collectionTableName: "rag_collections",
+            columns: {
+                idColumnName: "id",
+                vectorColumnName: "vector",
+                contentColumnName: "content",
+                metadataColumnName: "metadata",
+            },
+        });
+    }
+
+    /**
+     * Get settings for a team
+     */
+    private async getTeamSettings(teamId: string): Promise<Record<string, any>> {
+        if (!teamId) return {};
+        
+        try {
+            const integration = await Integration.findOne({
+                where: {
+                    teamId,
+                    service: IntegrationService.Rag,
+                    type: IntegrationType.Post,
+                },
+            });
+            return integration?.settings || {};
+        } catch (error) {
+            Logger.warn("Failed to fetch team RAG settings", error);
+            return {};
+        }
+    }
+
+    /**
+     * Initialize the database connection
      */
     public async initialize(): Promise<void> {
         if (this.initialized) {
@@ -41,25 +109,6 @@ export class VectorStoreService {
         }
 
         try {
-            // Initialize embeddings
-            this.embeddings = new OpenAIEmbeddings({
-                apiKey: env.RAG_OPENAI_API_KEY,
-                batchSize: 512,
-                model: env.RAG_EMBEDDING_MODEL,
-                configuration: env.RAG_OPENAI_BASE_URL
-                    ? { baseURL: env.RAG_OPENAI_BASE_URL }
-                    : undefined,
-            });
-
-            // Initialize text splitter
-            this.textSplitter = RecursiveCharacterTextSplitter.fromLanguage(
-                "markdown",
-                {
-                    chunkSize: env.RAG_CHUNK_SIZE,
-                    chunkOverlap: env.RAG_CHUNK_OVERLAP,
-                }
-            );
-
             // Create a new pg Pool instance using database URL or individual config
             if (serverEnv.DATABASE_URL) {
                 this.pool = new Pool({
@@ -87,24 +136,8 @@ export class VectorStoreService {
                 });
             }
 
-            // Initialize vector store with existing tables
-            this.vectorStore = await PGVectorStore.initialize(this.embeddings, {
-                pool: this.pool,
-                tableName: env.RAG_TABLE_NAME,
-                collectionName: "outline_documents",
-                collectionTableName: env.RAG_COLLECTION_TABLE_NAME,
-                columns: {
-                    idColumnName: "id",
-                    vectorColumnName: "vector",
-                    contentColumnName: "content",
-                    metadataColumnName: "metadata",
-                },
-            });
-
-            // Note: HNSW index is created by migration, no need to create here
-
             this.initialized = true;
-            Logger.info("plugins", "Vector store initialized successfully");
+            Logger.info("plugins", "Vector store service initialized successfully");
         } catch (error) {
             Logger.error("Vector store initialization failed", error as Error);
             throw error;
@@ -121,25 +154,39 @@ export class VectorStoreService {
         content: string,
         metadata: Record<string, any>
     ): Promise<void> {
-        if (!this.initialized) {
-            await this.initialize();
-        }
-
-        if (!this.vectorStore || !this.textSplitter) {
-            throw new Error("Vector store not initialized");
-        }
+        const teamId = metadata.teamId;
+        const settings = await this.getTeamSettings(teamId);
+        const vectorStore = await this.getVectorStore(settings);
 
         try {
+            const chunkSize = settings.RAG_CHUNK_SIZE || 1000;
+            const chunkOverlap = settings.RAG_CHUNK_OVERLAP || 200;
+
+            const textSplitter = RecursiveCharacterTextSplitter.fromLanguage(
+                "markdown",
+                {
+                    chunkSize,
+                    chunkOverlap,
+                }
+            );
+
             // Split document into chunks
-            const docs = await this.textSplitter.splitDocuments([
+            const docs = await textSplitter.splitDocuments([
                 {
                     pageContent: content,
                     metadata,
                 },
             ]);
 
+            // Prepend title to each chunk if available in metadata
+            if (metadata.documentTitle) {
+                for (const doc of docs) {
+                    doc.pageContent = `# ${metadata.documentTitle}\n\n${doc.pageContent}`;
+                }
+            }
+
             // Add to vector store
-            await this.vectorStore.addDocuments(docs);
+            await vectorStore.addDocuments(docs);
 
             Logger.debug("plugins", `Indexed document: ${metadata.documentId}`, {
                 chunks: docs.length,
@@ -156,18 +203,15 @@ export class VectorStoreService {
      * @param documentId document ID
      */
     public async deleteDocument(documentId: string): Promise<void> {
+        // Deletion relies on raw SQL and metadata, doesn't need specific embeddings settings
         if (!this.initialized) {
             await this.initialize();
-        }
-
-        if (!this.vectorStore) {
-            throw new Error("Vector store not initialized");
         }
 
         try {
             // Delete all chunks with this document ID
             await sequelize.query(
-                `DELETE FROM ${env.RAG_TABLE_NAME} WHERE metadata @> :metadata`,
+                `DELETE FROM rag_vectors WHERE metadata @> :metadata`,
                 {
                     replacements: { metadata: JSON.stringify({ documentId }) },
                     type: QueryTypes.DELETE,
@@ -193,7 +237,7 @@ export class VectorStoreService {
 
         try {
             const result = await sequelize.query(
-                `SELECT metadata FROM ${env.RAG_TABLE_NAME} WHERE metadata @> :metadata LIMIT 1`,
+                `SELECT metadata FROM rag_vectors WHERE metadata @> :metadata LIMIT 1`,
                 {
                     replacements: { metadata: JSON.stringify({ documentId }) },
                     type: QueryTypes.SELECT,
@@ -216,22 +260,23 @@ export class VectorStoreService {
      *
      * @param query search query
      * @param k number of results to return
-     * @returns similar documents with scores
+     * @param filter optional metadata filter (can contain teamId)
      */
     public async similaritySearch(
         query: string,
-        k: number = env.RAG_RETRIEVAL_K
+        k: number = 10,
+        filter?: Record<string, unknown>
     ): Promise<LangChainDocument[]> {
-        if (!this.initialized) {
-            await this.initialize();
+        // Extract teamId from filter if possible to load settings
+        let settings = {};
+        if (filter && typeof filter.teamId === 'string') {
+             settings = await this.getTeamSettings(filter.teamId);
         }
 
-        if (!this.vectorStore) {
-            throw new Error("Vector store not initialized");
-        }
+        const vectorStore = await this.getVectorStore(settings);
 
         try {
-            const results = await this.vectorStore.similaritySearch(query, k);
+            const results = await vectorStore.similaritySearch(query, k, filter);
             return results;
         } catch (error) {
             Logger.error("Failed to perform similarity search", error as Error);
@@ -244,24 +289,29 @@ export class VectorStoreService {
      *
      * @param query search query
      * @param k number of results to return
+     * @param filter optional metadata filter (can contain teamId)
      * @returns similar documents with similarity scores
      */
     public async similaritySearchWithScore(
         query: string,
-        k: number = env.RAG_RETRIEVAL_K
+        k: number = 10,
+        filter?: Record<string, unknown>
     ): Promise<[LangChainDocument, number][]> {
-        if (!this.initialized) {
-            await this.initialize();
+        // Extract teamId from filter if possible to load settings
+        // If teamId is not in filter, we might default to env settings
+        // Ideally the caller should pass teamId
+        let settings = {};
+        if (filter && typeof filter.teamId === 'string') {
+             settings = await this.getTeamSettings(filter.teamId);
         }
 
-        if (!this.vectorStore || !this.embeddings) {
-            throw new Error("Vector store not initialized");
-        }
+        const vectorStore = await this.getVectorStore(settings);
+        const embeddings = await this.getEmbeddings(settings);
 
         try {
-            const queryVector = await this.embeddings.embedQuery(query);
+            const queryVector = await embeddings.embedQuery(query);
             const results =
-                await this.vectorStore.similaritySearchVectorWithScore(queryVector, k);
+                await vectorStore.similaritySearchVectorWithScore(queryVector, k, filter);
             return results;
         } catch (error) {
             Logger.error("Failed to perform similarity search", error as Error);
