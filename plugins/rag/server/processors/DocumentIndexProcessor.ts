@@ -21,6 +21,7 @@ export default class DocumentIndexProcessor extends BaseProcessor {
         "documents.delete",
         "documents.archive",
         "documents.index",
+        "collections.delete",
     ];
 
     async perform(event: Event) {
@@ -89,6 +90,15 @@ export default class DocumentIndexProcessor extends BaseProcessor {
             case "documents.archive": {
                 // Remove from vector store when document is deleted or archived
                 await this.removeDocument(event.documentId);
+                break;
+            }
+
+            case "collections.delete": {
+                if ("collectionId" in event) {
+                    await VectorStoreService.getInstance().deleteCollection(
+                        event.collectionId
+                    );
+                }
                 break;
             }
 

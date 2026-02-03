@@ -9,7 +9,6 @@ import Logger from "@server/logging/Logger";
 import serverEnv from "@server/env";
 import Integration from "@server/models/Integration";
 import { IntegrationService, IntegrationType } from "@shared/types";
-import env from "./env";
 
 /**
  * Service for managing vector store operations
@@ -226,6 +225,33 @@ export class VectorStoreService {
     }
 
     /**
+     * Delete collection from vector store
+     *
+     * @param collectionId collection ID
+     */
+    public async deleteCollection(collectionId: string): Promise<void> {
+        if (!this.initialized) {
+            await this.initialize();
+        }
+
+        try {
+            // Delete all chunks with this collection ID
+            await sequelize.query(
+                `DELETE FROM rag_vectors WHERE metadata @> :metadata`,
+                {
+                    replacements: { metadata: JSON.stringify({ collectionId }) },
+                    type: QueryTypes.DELETE,
+                }
+            );
+
+            Logger.debug("plugins", `Deleted collection from vector store: ${collectionId}`);
+        } catch (error) {
+            Logger.error("Failed to delete collection", error as Error);
+            throw error;
+        }
+    }
+
+    /**
      * Find document metadata by ID
      * 
      * @param documentId document ID
@@ -276,7 +302,7 @@ export class VectorStoreService {
         const vectorStore = await this.getVectorStore(settings);
 
         try {
-            const results = await vectorStore.similaritySearch(query, k, filter);
+            const results = await vectorStore.similaritySearch(query, k, filter as any);
             return results;
         } catch (error) {
             Logger.error("Failed to perform similarity search", error as Error);
@@ -311,7 +337,7 @@ export class VectorStoreService {
         try {
             const queryVector = await embeddings.embedQuery(query);
             const results =
-                await vectorStore.similaritySearchVectorWithScore(queryVector, k, filter);
+                await vectorStore.similaritySearchVectorWithScore(queryVector, k, filter as any);
             return results;
         } catch (error) {
             Logger.error("Failed to perform similarity search", error as Error);

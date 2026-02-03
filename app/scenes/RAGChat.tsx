@@ -3,6 +3,34 @@ import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { AnimatePresence, motion } from "framer-motion";
 import uniqBy from "lodash/uniqBy";
 import markdownit from "markdown-it";
+import refractor from "refractor/core";
+import bash from "refractor/lang/bash";
+import cssLang from "refractor/lang/css";
+import clike from "refractor/lang/clike";
+import go from "refractor/lang/go";
+import java from "refractor/lang/java";
+import javascript from "refractor/lang/javascript";
+import json from "refractor/lang/json";
+import markup from "refractor/lang/markup";
+import python from "refractor/lang/python";
+import sql from "refractor/lang/sql";
+import typescript from "refractor/lang/typescript";
+import yaml from "refractor/lang/yaml";
+
+// Register languages for syntax highlighting
+refractor.register(bash);
+refractor.register(cssLang);
+refractor.register(clike);
+refractor.register(go);
+refractor.register(java);
+refractor.register(javascript);
+refractor.register(json);
+refractor.register(markup);
+refractor.register(python);
+refractor.register(sql);
+refractor.register(typescript);
+refractor.register(yaml);
+
 import { observer } from "mobx-react";
 import { transparentize } from "polished";
 import {
@@ -18,9 +46,12 @@ import {
   HistoryIcon,
   SettingsIcon,
   CollectionIcon as SVGCollectionIcon,
+  CopyIcon,
+  CheckmarkIcon,
 } from "outline-icons";
 import * as React from "react";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { useTranslation } from "react-i18next";
 import { useHistory, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -82,6 +113,44 @@ interface DocumentChunk {
   content: string;
   metadata: Record<string, unknown>;
 }
+
+function escapeHtml(unsafe: string) {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function nodeToHtml(node: any): string {
+  if (node.type === "text") {
+    return escapeHtml(node.value);
+  } else if (node.type === "element") {
+    const attrs = Object.entries(node.properties || {})
+      .map(([key, value]) => {
+        const attrName = key === "className" ? "class" : key;
+        const val = Array.isArray(value) ? value.join(" ") : value;
+        return `${attrName}="${escapeHtml(String(val))}"`;
+      })
+      .join(" ");
+    const children = (node.children || []).map(nodeToHtml).join("");
+    return `<${node.tagName} ${attrs}>${children}</${node.tagName}>`;
+  }
+  return "";
+}
+
+const highlight = (str: string, lang: string): string => {
+  if (lang && refractor.registered(lang)) {
+    try {
+      const nodes = refractor.highlight(str, lang);
+      return nodes.map(nodeToHtml).join("");
+    } catch (e) {
+      console.warn("Highlight error:", e);
+    }
+  }
+  return ""; // markdown-it will use default escaping
+};
 
 const TimeSeparator = ({ date }: { date: Date }) => {
   // Format: 1月30日星期五 · AI
@@ -377,19 +446,8 @@ function RAGChat() {
       linkify: true,
       typographer: true,
       breaks: true,
+      highlight,
     });
-
-    const defaultFence = instance.renderer.rules.fence || function(tokens, idx, options, env, self) {
-      const token = tokens[idx];
-      const info = token.info ? instance.utils.unescapeAll(token.info).trim() : '';
-      let langName = '';
-      if (info) {
-        langName = info.split(/\s+/g)[0];
-      }
-      return  '<pre><code class="language-' + langName + '">'
-            + instance.utils.escapeHtml(token.content)
-            + '</code></pre>\n';
-    };
 
     instance.renderer.rules.fence = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
@@ -406,7 +464,29 @@ function RAGChat() {
         return `<div class="chat-error-message">${content}</div>`;
       }
 
-      return defaultFence(tokens, idx, options, env, self);
+      // Default fence rendering with copy button
+      let highlighted;
+      if (options.highlight) {
+        highlighted = options.highlight(token.content, langName, "") || instance.utils.escapeHtml(token.content);
+      } else {
+        highlighted = instance.utils.escapeHtml(token.content);
+      }
+
+      const languageClass = langName ? 'language-' + langName : '';
+      
+      const copyIconHtml = renderToStaticMarkup(<CopyIcon size={16} />);
+      const checkIconHtml = renderToStaticMarkup(<CheckmarkIcon size={16} />);
+
+      return `<div class="code-block-wrapper">
+                <div class="code-header">
+                  <span class="lang-label">${langName}</span>
+                  <button class="copy-code-btn" aria-label="Copy code">
+                    <span class="icon-copy">${copyIconHtml}</span>
+                    <span class="icon-check">${checkIconHtml}</span>
+                  </button>
+                </div>
+                <pre><code class="${languageClass}">${highlighted}</code></pre>
+              </div>`;
     };
 
     // Wrap tables for horizontal scrolling
@@ -419,6 +499,34 @@ function RAGChat() {
 
     return instance;
   }, []);
+
+  const handleCopyCode = useCallback(async (e: React.MouseEvent) => {
+    const target = (e.target as HTMLElement).closest(".copy-code-btn");
+    if (!target) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const wrapper = target.closest(".code-block-wrapper");
+    if (!wrapper) return;
+
+    const codeElement = wrapper.querySelector("code");
+    if (!codeElement) return;
+
+    const text = codeElement.innerText || codeElement.textContent || "";
+    
+    try {
+      await navigator.clipboard.writeText(text);
+      target.classList.add("copied");
+      toast.success(t("Copied to clipboard"));
+      
+      setTimeout(() => {
+        target.classList.remove("copied");
+      }, 2000);
+    } catch (err) {
+      toast.error(t("Failed to copy"));
+    }
+  }, [t]);
 
   // Render Mermaid diagrams
   useEffect(() => {
@@ -1169,7 +1277,10 @@ function RAGChat() {
                                 dangerouslySetInnerHTML={{
                                   __html: md.render(message.content),
                                 }}
-                                onClick={handleImageClick}
+                                onClick={(e) => {
+                                  handleImageClick(e);
+                                  handleCopyCode(e);
+                                }}
                               />
                                   ) : (
                                     <TypingIndicator>
@@ -1953,7 +2064,7 @@ const MarkdownWrapper = styled.div`
     background: ${(props) => props.theme.slateLight};
     padding: 2px 4px;
     border-radius: 4px;
-    font-family: monospace;
+    font-family: ${(props) => props.theme.fontFamilyMono};
     font-size: 0.9em;
   }
   
@@ -1966,12 +2077,221 @@ const MarkdownWrapper = styled.div`
     width: 100%;
     max-width: 100%; /* Ensure it doesn't overflow */
     white-space: pre;
+    font-family: ${(props) => props.theme.fontFamilyMono};
     
     code {
       background: transparent;
       padding: 0;
       border-radius: 0;
+      font-family: ${(props) => props.theme.fontFamilyMono};
     }
+  }
+
+  /* Syntax Highlighting */
+  .code-block-wrapper {
+    position: relative;
+    margin: 12px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: ${(props) => props.theme.codeBackground || props.theme.slateLight};
+  }
+
+  .code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: ${(props) => transparentize(0.5, props.theme.codeBackground || props.theme.slateLight)};
+    border-bottom: 1px solid ${(props) => transparentize(0.9, props.theme.text)};
+    font-size: 12px;
+    color: ${(props) => props.theme.textTertiary};
+  }
+
+  .lang-label {
+    text-transform: uppercase;
+    font-family: ${(props) => props.theme.fontFamilyMono};
+    font-weight: 600;
+  }
+
+  .copy-code-btn {
+    background: transparent;
+    border: none;
+    color: ${(props) => props.theme.textTertiary};
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    position: relative;
+    width: 24px;
+    height: 24px;
+
+    &:hover {
+      background: ${(props) => props.theme.slateLight};
+      color: ${(props) => props.theme.text};
+    }
+
+    .icon-copy,
+    .icon-check {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      transition: all 0.2s;
+    }
+
+    .icon-check {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.5);
+      color: ${(props) => props.theme.brand.green || "green"};
+    }
+
+    &.copied .icon-copy {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.5);
+    }
+
+    &.copied .icon-check {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  }
+
+  pre {
+    background: transparent !important;
+    padding: 12px;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .token.comment,
+  .token.prolog,
+  .token.doctype,
+  .token.cdata {
+    color: ${(props) => props.theme.codeComment};
+  }
+
+  .token.punctuation {
+    color: ${(props) => props.theme.codePunctuation};
+  }
+
+  .token.namespace {
+    opacity: 0.7;
+  }
+
+  .token.boolean,
+  .token.number {
+    color: ${(props) => props.theme.codeNumber};
+  }
+
+  .token.property,
+  .token.variable {
+    color: ${(props) => props.theme.codeProperty};
+  }
+
+  .token.tag {
+    color: ${(props) => props.theme.codeTag};
+  }
+
+  .token.char,
+  .token.builtin,
+  .token.string {
+    color: ${(props) => props.theme.codeString};
+  }
+
+  .token.selector {
+    color: ${(props) => props.theme.codeSelector};
+  }
+
+  .token.attr-name {
+    color: ${(props) => props.theme.codeAttrName};
+  }
+
+  .token.attr-value,
+  .token.attr-value .token.punctuation {
+    color: ${(props) => props.theme.codeAttrValue};
+  }
+
+  .token.operator {
+    color: ${(props) => props.theme.codeOperator};
+  }
+
+  .token.namespace {
+    opacity: 0.8;
+  }
+
+  .token.entity,
+  .token.url,
+  .language-css .token.string,
+  .style .token.string {
+    color: ${(props) => props.theme.codeEntity};
+  }
+
+  .token.attr-value,
+  .token.keyword,
+  .token.control,
+  .token.directive,
+  .token.unit {
+    color: ${(props) => props.theme.codeKeyword};
+  }
+
+  .token.function,
+  .token.class-name-definition {
+    color: ${(props) => props.theme.codeFunction};
+  }
+
+  .token.class-name {
+    color: ${(props) => props.theme.codeClassName};
+  }
+
+  .token.statement,
+  .token.regex,
+  .token.atrule {
+    color: ${(props) => props.theme.codeStatement};
+  }
+
+  .token.placeholder,
+  .token.variable {
+    color: ${(props) => props.theme.codePlaceholder};
+  }
+
+  .token.deleted {
+    text-decoration: line-through;
+  }
+
+  .token.inserted {
+    border-bottom: 1px dotted ${(props) => props.theme.codeInserted};
+    text-decoration: none;
+  }
+
+  .token.italic {
+    font-style: italic;
+  }
+
+  .token.important,
+  .token.bold {
+    font-weight: bold;
+  }
+
+  .token.constant {
+    color: ${(props) => props.theme.codeConstant};
+  }
+
+  .token.parameter {
+    color: ${(props) => props.theme.codeParameter};
+  }
+
+  .token.important {
+    color: ${(props) => props.theme.codeImportant};
+  }
+
+  .token.entity {
+    cursor: help;
   }
   
   ul, ol {
