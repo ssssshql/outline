@@ -85,6 +85,7 @@ export const RagSetSettingsSchema = z.object({
         RAG_CHUNK_OVERLAP: z.any().optional(),
         RAG_RETRIEVAL_K: z.any().optional(),
         RAG_SCORE_THRESHOLD: z.any().optional(),
+        RAG_TEMPERATURE: z.any().optional(),
     }),
 });
 

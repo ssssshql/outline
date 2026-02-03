@@ -30,8 +30,8 @@ export class ChatService {
      * Get chat model based on settings
      */
     private async getChatModel(settings: Record<string, any> = {}): Promise<ChatOpenAI> {
-        const apiKey = settings.RAG_CHAT_API_KEY || settings.RAG_OPENAI_API_KEY;
-        const baseURL = settings.RAG_CHAT_BASE_URL || settings.RAG_OPENAI_BASE_URL;
+        const apiKey = settings.RAG_CHAT_API_KEY;
+        const baseURL = settings.RAG_CHAT_BASE_URL;
         const model = settings.RAG_CHAT_MODEL;
 
         if (!apiKey) {
@@ -41,7 +41,7 @@ export class ChatService {
         return new ChatOpenAI({
             apiKey,
             model,
-            temperature: 0.1,
+            temperature: settings.RAG_TEMPERATURE !== undefined ? Number(settings.RAG_TEMPERATURE) : 0.4,
             modelKwargs: {
                 thinking: {
                     type: "disabled",

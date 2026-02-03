@@ -1561,5 +1561,14 @@
   "Document deleted successfully": "文档删除成功",
   "Documents have been queued for indexing": "文档已加入索引队列",
   "Score Threshold": "评分阈值",
-  "Score Threshold must be a positive number": "评分阈值必须为正数"
+  "Score Threshold must be a positive number": "评分阈值必须为正数",
+  "Fine-tune the cognitive parameters of your knowledge base.": "微调知识库的认知参数。",
+  "The brain behind the chat responses.": "聊天回复背后的核心大脑。",
+  "Creativity (Temperature)": "创造力 (Temperature)",
+  "Precise": "精确",
+  "Balanced": "平衡",
+  "Creative": "创造性",
+  "How your documents are understood and vectorized.": "文档如何被理解和向量化。",
+  "Granular control over chunking and retrieval.": "对切片和检索进行精细控制。",
+  "Search chats...": "搜索对话..."
 }

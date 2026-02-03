@@ -48,6 +48,7 @@ import {
   CollectionIcon as SVGCollectionIcon,
   CopyIcon,
   CheckmarkIcon,
+  MenuIcon,
 } from "outline-icons";
 import * as React from "react";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
@@ -60,7 +61,7 @@ import Flex from "~/components/Flex";
 import Modal from "~/components/Modal";
 import Lightbox from "~/components/Lightbox";
 import type { LightboxImage } from "@shared/editor/lib/Lightbox";
-import { ArrowUpIcon, ArrowLeftIcon } from "~/components/Icons/ArrowIcon";
+import { ArrowUpIcon, ArrowLeftIcon, ArrowRightIcon } from "~/components/Icons/ArrowIcon";
 import CollectionIcon from "~/components/Icons/CollectionIcon";
 import {
   Menu,
@@ -96,6 +97,7 @@ interface ChatSession {
   title: string;
   messages: Message[];
   updatedAt: number;
+  selectedCollectionIds?: string[];
 }
 
 interface IndexedDocument {
@@ -153,11 +155,6 @@ const highlight = (str: string, lang: string): string => {
 };
 
 const TimeSeparator = ({ date }: { date: Date }) => {
-  // Format: 1月30日星期五 · AI
-  // Note: Assuming 'AI' was intended to be the time or a fixed string. 
-  // Given the context of a chat timestamp, displaying the actual time is most functional.
-  // We will format as: "M月D日星期X · HH:mm"
-  
   const dateStr = date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', weekday: 'long' });
   const timeStr = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -180,7 +177,7 @@ function RAGChat() {
   const team = useCurrentTeam({ rejectOnEmpty: false });
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false); // Default hidden
+  const [isSidebarOpen, setSidebarOpen] = useState(true); // Default visible
   const [showSettings, setShowSettings] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
@@ -196,7 +193,6 @@ function RAGChat() {
     indexing: IndexedDocument[];
   } | null>(null);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
-  const [isSidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -287,8 +283,9 @@ function RAGChat() {
           if (matchedSession) {
              setCurrentSessionId(sessionId);
              setMessages(matchedSession.messages);
+             setSelectedCollectionIds(matchedSession.selectedCollectionIds || []);
              if (window.innerWidth < 768) {
-               setShowHistory(false);
+               setSidebarOpen(false);
              }
              return; 
           }
@@ -310,6 +307,7 @@ function RAGChat() {
         if (session) {
             setCurrentSessionId(sessionId);
             setMessages(session.messages);
+            setSelectedCollectionIds(session.selectedCollectionIds || []);
         }
     }
   }, [sessionId, sessions, currentSessionId]);
@@ -324,18 +322,32 @@ function RAGChat() {
       setSessions((prev) => {
         const index = prev.findIndex((s) => s.id === currentSessionId);
         if (index === -1) {
+          if (messages.length > 0) {
+            const newSession: ChatSession = {
+              id: currentSessionId,
+              title: messages[0].content.slice(0, 30) || t("New Chat"),
+              messages,
+              updatedAt: Date.now(),
+              selectedCollectionIds,
+            };
+            const newSessions = [newSession, ...prev];
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(newSessions));
+            return newSessions;
+          }
           return prev;
         }
 
         const currentSession = prev[index];
         // Only update if messages changed
-        if (JSON.stringify(currentSession.messages) === JSON.stringify(messages)) {
+        if (JSON.stringify(currentSession.messages) === JSON.stringify(messages) && 
+            JSON.stringify(currentSession.selectedCollectionIds || []) === JSON.stringify(selectedCollectionIds)) {
             return prev;
         }
 
         const updated = {
           ...currentSession,
           messages,
+          selectedCollectionIds,
           updatedAt: Date.now(),
         };
 
@@ -357,53 +369,26 @@ function RAGChat() {
     }, 1000);
 
     return () => clearTimeout(handler);
-  }, [messages, currentSessionId, t]);
+  }, [messages, currentSessionId, t, selectedCollectionIds]);
 
   const createNewChat = useCallback(() => {
     if (isLoading) {
       return;
     }
     const newId = uuidv4();
-    const newSession: ChatSession = {
-      id: newId,
-      title: t("New Chat"),
-      messages: [],
-      updatedAt: Date.now(),
-    };
-    setSessions((prev) => [newSession, ...prev]);
     
     // Update URL
     history.push(`/rag/chat/${newId}`);
 
     setCurrentSessionId(newId);
     setMessages([]);
+    setSelectedCollectionIds([]);
     setInput("");
     if (window.innerWidth < 768) {
-      setShowHistory(false);
+      setSidebarOpen(false);
     }
     setTimeout(() => inputRef.current?.focus(), 100);
   }, [isLoading, t, history]);
-
-  // Handle keyboard shortcuts for history modal
-  useEffect(() => {
-    if (!showHistory) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setShowHistory(false);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        createNewChat();
-        setShowHistory(false);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [showHistory, createNewChat]);
 
   const selectSession = (id: string) => {
     if (id === currentSessionId || isLoading) {
@@ -416,8 +401,9 @@ function RAGChat() {
     if (session) {
       setCurrentSessionId(id);
       setMessages(session.messages);
+      setSelectedCollectionIds(session.selectedCollectionIds || []);
       if (window.innerWidth < 768) {
-        setShowHistory(false);
+        setSidebarOpen(false);
       }
     }
   };
@@ -962,451 +948,444 @@ function RAGChat() {
   // --- bold design: "Ethereal Focus" ---
   return (
     <Wrapper>
-      {/* Floating Top Bar */}
-      <TopBar>
-        <TopBarLeft>
-          <CurrentChatButton onClick={() => setShowHistory(true)} title={t("View chat history")}>
-            <HistoryLabel>{t("History")} /</HistoryLabel>
-            <ChatTitle>{currentTitle}</ChatTitle>
-            <ChevronIconWrapper>
-              <HistoryIcon size={14} />
-            </ChevronIconWrapper>
-          </CurrentChatButton>
-        </TopBarLeft>
-
-        <TopBarRight>
-          <GlassIconButton
-            onClick={() => setShowDocuments(!showDocuments)}
-            title={showDocuments ? t("Hide knowledge base") : t("Show knowledge base")}
-            $active={showDocuments}
-          >
-            {showDocuments ? <CloseIcon size={20} /> : <SearchIcon size={20} />}
-          </GlassIconButton>
-          
-          {user?.isAdmin && (
-            <Menu>
-              <MenuTrigger>
-                <GlassIconButton as="span">
-                  <SettingsIcon size={20} />
-                </GlassIconButton>
-              </MenuTrigger>
-              <MenuContent>
-                <MenuButton
-                  onClick={() => setShowSettings(true)}
-                  icon={<SettingsIcon />}
-                  label={t("RAG Configuration")}
-                />
-                <MenuButton
-                  onClick={() => {
-                    dialogs.openModal({
-                      title: t("Confirm Re-index"),
-                      content: (
-                        <ConfirmationDialog
-                          onSubmit={handleIndexAll}
-                          submitText={t("Re-index")}
-                          savingText={t("Indexing...")}
-                        >
-                          <Text>
-                            {t("Are you sure you want to re-index all documents? This may take a while.")}
-                          </Text>
-                        </ConfirmationDialog>
-                      )
-                    });
-                  }}
-                  disabled={isIndexing}
-                  icon={<RestoreIcon />}
-                  label={isIndexing ? t("Indexing...") : t("Re-index all")}
-                />
-              </MenuContent>
-            </Menu>
-          )}
-        </TopBarRight>
-      </TopBar>
-
-
-
-      {/* Command Center Overlay (History) */}
+      {/* Sidebar */}
       <AnimatePresence>
-        {showHistory && (
-          <CommandCenterOverlay>
-            <Backdrop onClick={() => setShowHistory(false)} />
-            <CommandCard>
-              <CommandHeader>
-                <SearchIcon size={18} color="currentColor"/>
-                <CommandSearchInput
-                  autoFocus
-                  placeholder={t("Search or start new chat...")}
-                  value={filterQuery}
-                  onChange={(e) => setFilterQuery(e.target.value)}
-                />
-                <CommandShortcut>Esc</CommandShortcut>
-              </CommandHeader>
-              
-              <CommandList>
-                <CommandSectionTitle>{t("Actions")}</CommandSectionTitle>
-                <CommandItem
-                  $active={false}
-                  onClick={() => {
-                    createNewChat();
-                    setShowHistory(false);
-                  }}
-                >
-                  <CommandIcon $color="primary">
-                    <PlusIcon size={16} />
-                  </CommandIcon>
-                  <CommandContent>
-                    <CommandTitle>{t("New Chat")}</CommandTitle>
-                    <CommandSubtitle>{t("Start a fresh conversation")}</CommandSubtitle>
-                  </CommandContent>
-                  <CommandShortcut>Enter</CommandShortcut>
-                </CommandItem>
+        {isSidebarOpen && (
+          <SidebarContainer
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 260, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 400, damping: 40 }}
+          >
+            <SidebarHeader>
+              <SearchIcon size={18} color="currentColor"/>
+              <CommandSearchInput
+                placeholder={t("Search chats...")}
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+              />
+            </SidebarHeader>
+            
+            <SidebarList>
+              <SidebarSectionTitle>{t("Actions")}</SidebarSectionTitle>
+              <CommandItem
+                $active={false}
+                onClick={() => {
+                  createNewChat();
+                }}
+              >
+                <CommandIcon $color="primary">
+                  <PlusIcon size={16} />
+                </CommandIcon>
+                <CommandContent>
+                  <CommandTitle>{t("New Chat")}</CommandTitle>
+                </CommandContent>
+              </CommandItem>
 
-                <CommandSectionTitle>{t("Recent")}</CommandSectionTitle>
-                {filteredSessions.length > 0 ? (
-                  filteredSessions.map((session) => (
-                    <CommandItem
-                      key={session.id}
-                      $active={session.id === currentSessionId}
-                      onClick={() => {
-                        selectSession(session.id);
-                        setShowHistory(false);
-                      }}
-                    >
-                      <CommandIcon>
-                        <CommentIcon size={16} />
-                      </CommandIcon>
-                      <CommandContent>
-                        <CommandTitle>{session.title}</CommandTitle>
-                        <CommandSubtitle>
-                          {new Date(session.updatedAt).toLocaleDateString(i18n.language, {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit"
-                          })}
-                        </CommandSubtitle>
-                      </CommandContent>
-                      <DeleteAction onClick={(e) => deleteSession(e, session.id)}>
-                        <TrashIcon size={14} />
-                      </DeleteAction>
-                    </CommandItem>
-                  ))
-                ) : (
-                  <EmptySearch>
-                    {t("No conversations found")}
-                  </EmptySearch>
-                )}
-              </CommandList>
-            </CommandCard>
-          </CommandCenterOverlay>
+              <SidebarSectionTitle>{t("Recent")}</SidebarSectionTitle>
+              {filteredSessions.length > 0 ? (
+                filteredSessions.map((session) => (
+                  <CommandItem
+                    key={session.id}
+                    $active={session.id === currentSessionId}
+                    onClick={() => {
+                      selectSession(session.id);
+                    }}
+                  >
+                    <CommandIcon>
+                      <CommentIcon size={16} />
+                    </CommandIcon>
+                    <CommandContent>
+                      <CommandTitle>{session.title}</CommandTitle>
+                      <CommandSubtitle>
+                        {new Date(session.updatedAt).toLocaleDateString(i18n.language, {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </CommandSubtitle>
+                    </CommandContent>
+                    <DeleteAction onClick={(e) => deleteSession(e, session.id)}>
+                      <TrashIcon size={14} />
+                    </DeleteAction>
+                  </CommandItem>
+                ))
+              ) : (
+                <EmptySearch>
+                  {t("No conversations found")}
+                </EmptySearch>
+              )}
+            </SidebarList>
+          </SidebarContainer>
         )}
       </AnimatePresence>
 
-      {/* Knowledge Base Overlay */}
-      <AnimatePresence>
-        {showDocuments && (
-          <DocumentsOverlay
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <Backdrop onClick={handleCloseDocuments} />
-            <DocumentsPanel
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            >
-              <DocumentsHeader>
-                {selectedDocument ? (
-                  <Flex align="center" gap={8}>
-                    <ModalBackBtn onClick={handleBackToList}>
-                      <ArrowLeftIcon size={24} />
-                    </ModalBackBtn>
-                    <DocumentsTitle>{t("Document details")}</DocumentsTitle>
-                  </Flex>
-                ) : (
-                  <DocumentsTitle>{t("Knowledge Base")}</DocumentsTitle>
-                )}
-                <GlassIconButton onClick={handleCloseDocuments}>
-                   <CloseIcon size={20} />
-                </GlassIconButton>
-              </DocumentsHeader>
+      <MainColumn>
+        {/* Floating Top Bar */}
+        <TopBar>
+          <TopBarLeft>
+            <CurrentChatButton onClick={() => setSidebarOpen(!isSidebarOpen)} title={isSidebarOpen ? t("Close sidebar") : t("Open sidebar")}>
+              <GlassIconButton as="span" style={{ marginRight: 8, width: 32, height: 32 }}>
+                {isSidebarOpen ? <ArrowLeftIcon size={16} /> : <ArrowRightIcon size={16} />}
+              </GlassIconButton>
+              <ChatTitle>{currentTitle}</ChatTitle>
+            </CurrentChatButton>
+          </TopBarLeft>
 
-              {selectedDocument ? (
-                <ChunksGrid>
-                  {chunks.length > 0 ? (
-                    chunks.map((chunk) => (
-                      <ChunkCard key={chunk.id}>
-                        <ChunkHeader>
-                          <ChunkIndex>#{chunk.index}</ChunkIndex>
-                          <ChunkId>{chunk.id.substring(0, 8)}</ChunkId>
-                        </ChunkHeader>
-                        <ChunkText>{chunk.content}</ChunkText>
-                      </ChunkCard>
-                    ))
+          <TopBarRight>
+            <GlassIconButton
+              onClick={() => setShowDocuments(!showDocuments)}
+              title={showDocuments ? t("Hide knowledge base") : t("Show knowledge base")}
+              $active={showDocuments}
+            >
+              {showDocuments ? <CloseIcon size={20} /> : <SearchIcon size={20} />}
+            </GlassIconButton>
+            
+            {user?.isAdmin && (
+              <Menu>
+                <MenuTrigger>
+                  <GlassIconButton as="span">
+                    <SettingsIcon size={20} />
+                  </GlassIconButton>
+                </MenuTrigger>
+                <MenuContent>
+                  <MenuButton
+                    onClick={() => setShowSettings(true)}
+                    icon={<SettingsIcon />}
+                    label={t("RAG Configuration")}
+                  />
+                  <MenuButton
+                    onClick={() => {
+                      dialogs.openModal({
+                        title: t("Confirm Re-index"),
+                        content: (
+                          <ConfirmationDialog
+                            onSubmit={handleIndexAll}
+                            submitText={t("Re-index")}
+                            savingText={t("Indexing...")}
+                          >
+                            <Text>
+                              {t("Are you sure you want to re-index all documents? This may take a while.")}
+                            </Text>
+                          </ConfirmationDialog>
+                        )
+                      });
+                    }}
+                    disabled={isIndexing}
+                    icon={<RestoreIcon />}
+                    label={isIndexing ? t("Indexing...") : t("Re-index all")}
+                  />
+                </MenuContent>
+              </Menu>
+            )}
+          </TopBarRight>
+        </TopBar>
+
+        {/* Knowledge Base Overlay */}
+        <AnimatePresence>
+          {showDocuments && (
+            <DocumentsOverlay
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <Backdrop onClick={handleCloseDocuments} />
+              <DocumentsPanel
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              >
+                <DocumentsHeader>
+                  {selectedDocument ? (
+                    <Flex align="center" gap={8}>
+                      <ModalBackBtn onClick={handleBackToList}>
+                        <ArrowLeftIcon size={24} />
+                      </ModalBackBtn>
+                      <DocumentsTitle>{t("Document details")}</DocumentsTitle>
+                    </Flex>
                   ) : (
-                    <LoadingState>{t("Loading...")}</LoadingState>
+                    <DocumentsTitle>{t("Knowledge Base")}</DocumentsTitle>
                   )}
-                </ChunksGrid>
-              ) : (
-                <ModalScrollArea>
-                  {documents?.indexing && documents.indexing.length > 0 && (
-                    <DocSection>
-                      <SectionLabel>{t("In progress / Failed")}</SectionLabel>
-                      <DocList>
-                        {documents.indexing.map((doc) => {
-                          const isFailed = doc.status === "failed";
-                          const isRetrying = doc.status === "retrying";
-                          return (
-                            <DocItem key={doc.documentId} $disabled={!isFailed}>
-                              <DocIcon
-                                $isError={isFailed}
-                                $isWarning={isRetrying}
-                              >
-                                {isFailed ? (
-                                  <WarningIcon size={14} />
-                                ) : (
-                                  <RestoreIcon size={14} className="spin" />
-                                )}
-                              </DocIcon>
-                              <DocInfo>
-                                <DocTitle>{doc.documentTitle}</DocTitle>
-                                <DocStatus
+                  <GlassIconButton onClick={handleCloseDocuments}>
+                     <CloseIcon size={20} />
+                  </GlassIconButton>
+                </DocumentsHeader>
+
+                {selectedDocument ? (
+                  <ChunksGrid>
+                    {chunks.length > 0 ? (
+                      chunks.map((chunk) => (
+                        <ChunkCard key={chunk.id}>
+                          <ChunkHeader>
+                            <ChunkIndex>#{chunk.index}</ChunkIndex>
+                            <ChunkId>{chunk.id.substring(0, 8)}</ChunkId>
+                          </ChunkHeader>
+                          <ChunkText>{chunk.content}</ChunkText>
+                        </ChunkCard>
+                      ))
+                    ) : (
+                      <LoadingState>{t("Loading...")}</LoadingState>
+                    )}
+                  </ChunksGrid>
+                ) : (
+                  <ModalScrollArea>
+                    {documents?.indexing && documents.indexing.length > 0 && (
+                      <DocSection>
+                        <SectionLabel>{t("In progress / Failed")}</SectionLabel>
+                        <DocList>
+                          {documents.indexing.map((doc) => {
+                            const isFailed = doc.status === "failed";
+                            const isRetrying = doc.status === "retrying";
+                            return (
+                              <DocItem key={doc.documentId} $disabled={!isFailed}>
+                                <DocIcon
                                   $isError={isFailed}
                                   $isWarning={isRetrying}
                                 >
-                                  {isFailed
-                                    ? t("Indexing failed")
-                                    : isRetrying
-                                    ? t("Retrying...")
-                                    : t("Indexing...")}
-                                </DocStatus>
-                                {isFailed && doc.error && (
-                                  <DocError title={doc.error}>
-                                    {doc.error}
-                                  </DocError>
-                                )}
-                              </DocInfo>
-                            </DocItem>
-                          );
-                        })}
-                      </DocList>
-                    </DocSection>
-                  )}
-
-                  {documents?.indexed && documents.indexed.length > 0 ? (
-                    <DocSection>
-                      <SectionLabel>
-                        {t("Indexed")} ({documents.indexed.length})
-                      </SectionLabel>
-                      <DocList>
-                        {documents.indexed.map((doc) => (
-                          <DocItem
-                            key={doc.documentId}
-                            onClick={() => handleDocumentClick(doc)}
-                          >
-                            <DocIcon>
-                              <DocumentIcon size={16} />
-                            </DocIcon>
-                            <DocInfo>
-                              <DocTitle>{doc.documentTitle}</DocTitle>
-                              <DocMeta>
-                                {doc.chunks} {t("chunks")} •{" "}
-                                {new Date(
-                                  doc.updatedAt || ""
-                                ).toLocaleDateString(i18n.language)}
-                              </DocMeta>
-                            </DocInfo>
-                            <MoreIconWrapper>
-                              <MoreIcon size={16} color="currentColor" />
-                            </MoreIconWrapper>
-                          </DocItem>
-                        ))}
-                      </DocList>
-                    </DocSection>
-                  ) : (
-                    !documents?.indexing?.length && (
-                      <EmptyStateSmall>
-                        {t("No indexed documents")}
-                      </EmptyStateSmall>
-                    )
-                  )}
-                </ModalScrollArea>
-              )}
-            </DocumentsPanel>
-          </DocumentsOverlay>
-        )}
-      </AnimatePresence>
-
-      <ContentWrapper>
-        <MainContent>
-          <ChatScrollArea>
-            <ChatContainer>
-              {messages.length === 0 ? (
-                <div style={{ flex: 1 }} />
-              ) : (
-                <MessageList>
-                  {messages.map((message, index) => {
-                    const prevMessage = messages[index - 1];
-                    const showTimestamp = !prevMessage || (message.createdAt - (prevMessage.createdAt || 0) > 5 * 60 * 1000);
-
-                    return (
-                      <React.Fragment key={index}>
-                        {showTimestamp && <TimeSeparator date={new Date(message.createdAt || Date.now())} />}
-                        <MessageRow
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.3 }}
-                        >
-                          <MessageItem $isUser={message.role === "user"}>
-                            {message.role === "assistant" && (
-                              <Avatar>
-                                {team && (
-                                  <TeamLogo model={team} size={32} />
-                                )}
-                              </Avatar>
-                            )}
-
-                            <MessageContent $isUser={message.role === "user"}>
-                              {message.role === "assistant" ? (
-                                <>
-                                  {message.content ? (
-                                    <MarkdownWrapper
-                                dangerouslySetInnerHTML={{
-                                  __html: md.render(message.content),
-                                }}
-                                onClick={(e) => {
-                                  handleImageClick(e);
-                                  handleCopyCode(e);
-                                }}
-                              />
+                                  {isFailed ? (
+                                    <WarningIcon size={14} />
                                   ) : (
-                                    <TypingIndicator>
-                                      <span /><span /><span />
-                                    </TypingIndicator>
+                                    <RestoreIcon size={14} className="spin" />
                                   )}
-                                  {message.sources && message.sources.length > 0 && (
-                                    <SourcesContainer>
-                                      <SourcesLabel>{t("References")}</SourcesLabel>
-                                      <SourcesGrid>
-                                        {message.sources.map((source, idx) => (
-                                          <SourceCard
-                                            key={idx}
-                                            href={`/doc/${source.metadata.documentId}`}
-                                            target="_blank"
-                                          >
-                                            <DocumentIcon size={12} />
-                                            <span>
-                                              {source.metadata.documentTitle || t("Untitled document")}
-                                              {source.indices && source.indices.length > 0 && (
-                                                <SourceIndices>
-                                                  {source.indices.map(i => `#${i}`).join(" ")}
-                                                </SourceIndices>
-                                              )}
-                                            </span>
-                                          </SourceCard>
-                                        ))}
-                                      </SourcesGrid>
-                                    </SourcesContainer>
+                                </DocIcon>
+                                <DocInfo>
+                                  <DocTitle>{doc.documentTitle}</DocTitle>
+                                  <DocStatus
+                                    $isError={isFailed}
+                                    $isWarning={isRetrying}
+                                  >
+                                    {isFailed
+                                      ? t("Indexing failed")
+                                      : isRetrying
+                                      ? t("Retrying...")
+                                      : t("Indexing...")}
+                                  </DocStatus>
+                                  {isFailed && doc.error && (
+                                    <DocError title={doc.error}>
+                                      {doc.error}
+                                    </DocError>
                                   )}
-                                </>
-                              ) : (
-                                <UserBubble>{message.content}</UserBubble>
+                                </DocInfo>
+                              </DocItem>
+                            );
+                          })}
+                        </DocList>
+                      </DocSection>
+                    )}
+
+                    {documents?.indexed && documents.indexed.length > 0 ? (
+                      <DocSection>
+                        <SectionLabel>
+                          {t("Indexed")} ({documents.indexed.length})
+                        </SectionLabel>
+                        <DocList>
+                          {documents.indexed.map((doc) => (
+                            <DocItem
+                              key={doc.documentId}
+                              onClick={() => handleDocumentClick(doc)}
+                            >
+                              <DocIcon>
+                                <DocumentIcon size={16} />
+                              </DocIcon>
+                              <DocInfo>
+                                <DocTitle>{doc.documentTitle}</DocTitle>
+                                <DocMeta>
+                                  {doc.chunks} {t("chunks")} •{" "}
+                                  {new Date(
+                                    doc.updatedAt || ""
+                                  ).toLocaleDateString(i18n.language)}
+                                </DocMeta>
+                              </DocInfo>
+                              <MoreIconWrapper>
+                                <MoreIcon size={16} color="currentColor" />
+                              </MoreIconWrapper>
+                            </DocItem>
+                          ))}
+                        </DocList>
+                      </DocSection>
+                    ) : (
+                      !documents?.indexing?.length && (
+                        <EmptyStateSmall>
+                          {t("No indexed documents")}
+                        </EmptyStateSmall>
+                      )
+                    )}
+                  </ModalScrollArea>
+                )}
+              </DocumentsPanel>
+            </DocumentsOverlay>
+          )}
+        </AnimatePresence>
+
+        <ContentWrapper>
+          <MainContent>
+            <ChatScrollArea>
+              <ChatContainer>
+                {messages.length === 0 ? (
+                  <div style={{ flex: 1 }} />
+                ) : (
+                  <MessageList>
+                    {messages.map((message, index) => {
+                      const prevMessage = messages[index - 1];
+                      const showTimestamp = !prevMessage || (message.createdAt - (prevMessage.createdAt || 0) > 5 * 60 * 1000);
+
+                      return (
+                        <React.Fragment key={index}>
+                          {showTimestamp && <TimeSeparator date={new Date(message.createdAt || Date.now())} />}
+                          <MessageRow
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.3 }}
+                          >
+                            <MessageItem $isUser={message.role === "user"}>
+                              {message.role === "assistant" && (
+                                <Avatar>
+                                  {team && (
+                                    <TeamLogo model={team} size={32} />
+                                  )}
+                                </Avatar>
                               )}
-                            </MessageContent>
-                          </MessageItem>
-                        </MessageRow>
-                      </React.Fragment>
-                    );
-                  })}
-                  <div ref={messagesEndRef} style={{ height: 100 }} />
-                </MessageList>
+
+                              <MessageContent $isUser={message.role === "user"}>
+                                {message.role === "assistant" ? (
+                                  <>
+                                    {message.content ? (
+                                      <MarkdownWrapper
+                                  dangerouslySetInnerHTML={{
+                                    __html: md.render(message.content),
+                                  }}
+                                  onClick={(e) => {
+                                    handleImageClick(e);
+                                    handleCopyCode(e);
+                                  }}
+                                />
+                                    ) : (
+                                      <TypingIndicator>
+                                        <span /><span /><span />
+                                      </TypingIndicator>
+                                    )}
+                                    {message.sources && message.sources.length > 0 && (
+                                      <SourcesContainer>
+                                        <SourcesLabel>{t("References")}</SourcesLabel>
+                                        <SourcesGrid>
+                                          {message.sources.map((source, idx) => (
+                                            <SourceCard
+                                              key={idx}
+                                              href={`/doc/${source.metadata.documentId}`}
+                                              target="_blank"
+                                            >
+                                              <DocumentIcon size={12} />
+                                              <span>
+                                                {source.metadata.documentTitle || t("Untitled document")}
+                                                {source.indices && source.indices.length > 0 && (
+                                                  <SourceIndices>
+                                                    {source.indices.map(i => `#${i}`).join(" ")}
+                                                  </SourceIndices>
+                                                )}
+                                              </span>
+                                            </SourceCard>
+                                          ))}
+                                        </SourcesGrid>
+                                      </SourcesContainer>
+                                    )}
+                                  </>
+                                ) : (
+                                  <UserBubble>{message.content}</UserBubble>
+                                )}
+                              </MessageContent>
+                            </MessageItem>
+                          </MessageRow>
+                        </React.Fragment>
+                      );
+                    })}
+                    <div ref={messagesEndRef} style={{ height: 100 }} />
+                  </MessageList>
+                )}
+              </ChatContainer>
+            </ChatScrollArea>
+
+            <InputFloatingContainer $isCenter={messages.length === 0}>
+              {messages.length === 0 && (
+                <HeroEmptyState
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  <HeroIcon>
+                    {team && (
+                      <TeamLogo model={team} style={{ width: 80, height: 80 }} />
+                    )}
+                  </HeroIcon>
+                  <HeroTitle>{t("How can I help you today?")}</HeroTitle>
+                  <HeroSubtitle>
+                    {t("Ask about project specs, engineering guides, or meeting notes.")}
+                  </HeroSubtitle>
+                </HeroEmptyState>
               )}
-            </ChatContainer>
-          </ChatScrollArea>
 
-          <InputFloatingContainer $isCenter={messages.length === 0}>
-            {messages.length === 0 && (
-              <HeroEmptyState
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-              >
-                <HeroIcon>
-                  {team && (
-                    <TeamLogo model={team} style={{ width: 80, height: 80 }} />
-                  )}
-                </HeroIcon>
-                <HeroTitle>{t("How can I help you today?")}</HeroTitle>
-                <HeroSubtitle>
-                  {t("Ask about project specs, engineering guides, or meeting notes.")}
-                </HeroSubtitle>
-              </HeroEmptyState>
-            )}
-
-            <InputGlassWrapper
-                onSubmit={handleSubmit}
-                onClick={() => inputRef.current?.focus()}
-              >
-                <CollectionSelectorWrapper>
-                <Menu>
-                  <MenuTrigger>
-                    <CollectionSelectorButton>
-                      <SVGCollectionIcon size={16} />
-                      <span>{currentSelectionLabel}</span>
-                      <ChevronIconWrapper>
-                        <ArrowLeftIcon size={12}/>
-                      </ChevronIconWrapper>
-                    </CollectionSelectorButton>
-                  </MenuTrigger>
-                  <MenuContent>
-                    <MenuButton
-                      onClick={() => toggleCollection("")}
-                      selected={selectedCollectionIds.length === 0}
-                      icon={<SVGCollectionIcon />}
-                      label={t("All collections")}
-                    />
-                    {collections.orderedData.map((collection) => (
+              <InputGlassWrapper
+                  onSubmit={handleSubmit}
+                  onClick={() => inputRef.current?.focus()}
+                >
+                  <CollectionSelectorWrapper>
+                  <Menu>
+                    <MenuTrigger>
+                      <CollectionSelectorButton>
+                        <SVGCollectionIcon size={16} />
+                        <span>{currentSelectionLabel}</span>
+                        <ChevronIconWrapper>
+                          <ArrowUpIcon size={12}/>
+                        </ChevronIconWrapper>
+                      </CollectionSelectorButton>
+                    </MenuTrigger>
+                    <MenuContent>
                       <MenuButton
-                        key={collection.id}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          toggleCollection(collection.id);
-                        }}
-                        selected={selectedCollectionIds.includes(collection.id)}
-                        icon={<CollectionIcon collection={collection} />}
-                        label={collection.name}
+                        onClick={() => toggleCollection("")}
+                        selected={selectedCollectionIds.length === 0}
+                        icon={<SVGCollectionIcon />}
+                        label={t("All collections")}
                       />
-                    ))}
-                  </MenuContent>
-                </Menu>
-              </CollectionSelectorWrapper>
+                      {collections.orderedData.map((collection) => (
+                        <MenuButton
+                          key={collection.id}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            toggleCollection(collection.id);
+                          }}
+                          selected={selectedCollectionIds.includes(collection.id)}
+                          icon={<CollectionIcon collection={collection} />}
+                          label={collection.name}
+                        />
+                      ))}
+                    </MenuContent>
+                  </Menu>
+                </CollectionSelectorWrapper>
 
-              <InputRow>
-                <StyledInput
-                  ref={inputRef}
-                  type="text"
-                  placeholder={t("Ask anything...")}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  disabled={isLoading}
-                />
-                <SendButton type="submit" disabled={!input.trim() && !isLoading}>
-                  {isLoading ? (
-                    <div className="loading-dot" />
-                  ) : (
-                    <ArrowUpIcon size={20} />
-                  )}
-                </SendButton>
-              </InputRow>
-            </InputGlassWrapper>
-          </InputFloatingContainer>
-        </MainContent>
+                <InputRow>
+                  <StyledInput
+                    ref={inputRef}
+                    type="text"
+                    placeholder={t("Ask anything...")}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    disabled={isLoading}
+                  />
+                  <SendButton type="submit" disabled={!input.trim() && !isLoading}>
+                    {isLoading ? (
+                      <div className="loading-dot" />
+                    ) : (
+                      <ArrowUpIcon size={20} />
+                    )}
+                  </SendButton>
+                </InputRow>
+              </InputGlassWrapper>
+            </InputFloatingContainer>
+          </MainContent>
 
 
-      </ContentWrapper>
+        </ContentWrapper>
+      </MainColumn>
 
       {showSettings && (
         <RAGSettingsModal onRequestClose={() => setShowSettings(false)} />
@@ -1461,12 +1440,61 @@ const Wrapper = styled.div`
   width: 100%;
   height: 100vh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row; /* Changed to row */
   background: ${(props) => props.theme.background};
   color: ${(props) => props.theme.text};
   overflow: hidden;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   position: relative;
+`;
+
+const MainColumn = styled.div`
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+`;
+
+const SidebarContainer = styled(motion.div)`
+  width: 260px;
+  background: ${(props) => props.theme.isDark ? (props.theme.sidebarBackground || props.theme.background) : "#FFFFFF"};
+  border-right: 1px solid ${(props) => props.theme.divider};
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  z-index: 10;
+`;
+
+const SidebarHeader = styled.div`
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid ${(props) => props.theme.divider};
+  color: ${(props) => props.theme.textTertiary};
+`;
+
+const SidebarList = styled.div`
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  ${scrollbarMixin}
+`;
+
+const SidebarSectionTitle = styled.div`
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: ${(props) => props.theme.textTertiary};
+  padding: 8px 12px;
+  font-weight: 600;
+  margin-top: 8px;
+  
+  &:first-child {
+    margin-top: 0;
+  }
 `;
 
 const TopBar = styled.div`
@@ -1571,19 +1599,7 @@ const GlassIconButton = styled.button<{ $active?: boolean }>`
   }
 `;
 
-// Command Center
-const CommandCenterOverlay = styled(motion.div)`
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 500;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 15vh;
-`;
+// Command Center (Legacy styles reused for Sidebar Items)
 
 const DocumentsOverlay = styled(motion.div)`
   position: absolute;
@@ -1624,34 +1640,10 @@ const Backdrop = styled.div`
   /* backdrop-filter removed for performance */
 `;
 
-const CommandCard = styled(motion.div)`
-  position: relative;
-  width: 600px;
-  max-width: 90%;
-  max-height: 70vh;
-  background: ${(props) => props.theme.background};
-  border-radius: 16px;
-  box-shadow: 
-    0 24px 48px rgba(0, 0, 0, 0.2), 
-    0 0 0 1px rgba(0, 0, 0, 0.05);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  z-index: 501;
-`;
-
-const CommandHeader = styled.div`
-  display: flex;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid ${(props) => props.theme.divider};
-  gap: 12px;
-`;
-
 const CommandSearchInput = styled.input`
   flex: 1;
   border: none;
-  font-size: 18px;
+  font-size: 14px;
   background: transparent;
   color: ${(props) => props.theme.text};
   outline: none;
@@ -1661,40 +1653,16 @@ const CommandSearchInput = styled.input`
   }
 `;
 
-const CommandShortcut = styled.kbd`
-  font-family: monospace;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: ${(props) => props.theme.slateLight};
-  color: ${(props) => props.theme.textTertiary};
-  border: 1px solid rgba(0,0,0,0.05);
-`;
-
-const CommandList = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-`;
-
-const CommandSectionTitle = styled.div`
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: ${(props) => props.theme.textTertiary};
-  padding: 8px 12px;
-  font-weight: 600;
-`;
-
 const CommandItem = styled.div<{ $active?: boolean }>`
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
   cursor: pointer;
   transition: all 0.1s;
   background: ${(props) => (props.$active ? props.theme.slateLight : "transparent")};
+  margin-bottom: 4px;
 
   &:hover {
     background: ${(props) => props.theme.slateLight};
@@ -1702,15 +1670,16 @@ const CommandItem = styled.div<{ $active?: boolean }>`
 `;
 
 const CommandIcon = styled.div<{ $color?: "primary" }>`
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: ${(props) => props.$color === "primary" ? props.theme.text : props.theme.background};
   color: ${(props) => props.$color === "primary" ? props.theme.background : props.theme.textTertiary};
   border: 1px solid ${(props) => props.theme.divider};
+  flex-shrink: 0;
 `;
 
 const CommandContent = styled.div`
@@ -1719,17 +1688,47 @@ const CommandContent = styled.div`
 `;
 
 const CommandTitle = styled.div`
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: ${(props) => props.theme.text};
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 const CommandSubtitle = styled.div`
-  font-size: 12px;
+  font-size: 11px;
   color: ${(props) => props.theme.textTertiary};
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+`;
+
+const DeleteAction = styled.button`
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: ${(props) => props.theme.textTertiary};
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+
+  ${CommandItem}:hover & {
+    opacity: 1;
+  }
+
+  &:hover {
+    background: ${(props) => props.theme.danger};
+    color: white;
+  }
+`;
+
+const EmptySearch = styled.div`
+  padding: 24px;
+  text-align: center;
+  color: ${(props) => props.theme.textTertiary};
+  font-size: 13px;
 `;
 
 // Main Layout
@@ -1945,6 +1944,304 @@ const InputRow = styled.div`
   align-items: center;
   width: 100%;
   margin-top: 8px;
+`;
+
+const CollectionSelectorWrapper = styled.div`
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+`;
+
+const CollectionSelectorButton = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-left: -8px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: ${(props) => props.theme.textSecondary};
+  transition: all 0.2s;
+
+  &:hover {
+    background: ${(props) => props.theme.slateLight};
+    color: ${(props) => props.theme.text};
+  }
+`;
+
+const StyledInput = styled.input`
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 16px;
+  color: ${(props) => props.theme.text};
+  padding: 0 8px;
+  outline: none;
+
+  &::placeholder {
+    color: ${(props) => props.theme.placeholder};
+  }
+`;
+
+const SendButton = styled.button`
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: ${(props) => props.theme.text};
+  color: ${(props) => props.theme.background};
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  
+  &:disabled {
+    background: ${(props) => props.theme.slateLight};
+    color: ${(props) => props.theme.textTertiary};
+    cursor: not-allowed;
+  }
+
+  &:not(:disabled):hover {
+    transform: scale(1.1);
+  }
+
+  .loading-dot {
+    width: 8px;
+    height: 8px;
+    background: currentColor;
+    border-radius: 50%;
+    animation: pulse 1s infinite;
+  }
+
+  @keyframes pulse {
+    0% { transform: scale(0.8); opacity: 0.5; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(0.8); opacity: 0.5; }
+  }
+`;
+
+const TimeSeparatorContainer = styled.div`
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  opacity: 0.6;
+`;
+
+const TimeText = styled.span`
+  font-size: 11px;
+  color: ${(props) => props.theme.textTertiary};
+  background: ${(props) => props.theme.background};
+  padding: 2px 8px;
+  border-radius: 12px;
+`;
+
+const TypingIndicator = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+
+  span {
+    width: 4px;
+    height: 4px;
+    background: ${(props) => props.theme.textTertiary};
+    border-radius: 50%;
+    animation: typing 1.4s infinite ease-in-out both;
+  }
+
+  span:nth-child(1) { animation-delay: -0.32s; }
+  span:nth-child(2) { animation-delay: -0.16s; }
+  
+  @keyframes typing {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+  }
+`;
+
+const SourcesContainer = styled.div`
+  margin-top: 16px;
+  border-top: 1px solid ${(props) => props.theme.divider};
+  padding-top: 12px;
+`;
+
+const SourcesLabel = styled.div`
+  font-size: 11px;
+  text-transform: uppercase;
+  color: ${(props) => props.theme.textTertiary};
+  margin-bottom: 8px;
+  font-weight: 600;
+`;
+
+const SourcesGrid = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const ModalBackBtn = styled.button`
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  margin-left: -4px;
+  color: ${(props) => props.theme.text};
+  display: flex;
+  align-items: center;
+  
+  &:hover {
+    color: ${(props) => props.theme.brand.dark};
+  }
+`;
+
+const ChunksGrid = styled.div`
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+  align-content: start;
+  ${scrollbarMixin}
+`;
+
+const ChunkCard = styled.div`
+  background: ${(props) => props.theme.slateLight};
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+`;
+
+const ChunkHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: ${(props) => props.theme.textTertiary};
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+`;
+
+const ChunkIndex = styled.span``;
+const ChunkId = styled.span``;
+
+const ChunkText = styled.div`
+  white-space: pre-wrap;
+  color: ${(props) => props.theme.text};
+`;
+
+const LoadingState = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: ${(props) => props.theme.textTertiary};
+`;
+
+const DocSection = styled.div`
+  margin-bottom: 24px;
+`;
+
+const SectionLabel = styled.div`
+  padding: 0 20px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: ${(props) => props.theme.textTertiary};
+`;
+
+const DocList = styled.div`
+  display: flex;
+  flex-direction: column;
+`;
+
+const DocItem = styled.div<{ $disabled?: boolean }>`
+  display: flex;
+  align-items: center;
+  padding: 12px 20px;
+  gap: 12px;
+  cursor: ${(props) => (props.$disabled ? "default" : "pointer")};
+  transition: all 0.2s;
+  background: transparent;
+  border-bottom: 1px solid ${(props) => transparentize(0.5, props.theme.divider)};
+
+  &:hover {
+    background: ${(props) => (props.$disabled ? "transparent" : props.theme.slateLight)};
+  }
+  
+  &:last-child {
+    border-bottom: none;
+  }
+`;
+
+const DocIcon = styled.div<{ $isError?: boolean; $isWarning?: boolean }>`
+  color: ${(props) => 
+    props.$isError ? props.theme.danger : 
+    props.$isWarning ? props.theme.warning : 
+    props.theme.textTertiary};
+  display: flex;
+  align-items: center;
+
+  .spin {
+    animation: spin 2s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+`;
+
+const DocInfo = styled.div`
+  flex: 1;
+  min-width: 0;
+`;
+
+const DocTitle = styled.div`
+  font-size: 14px;
+  font-weight: 500;
+  color: ${(props) => props.theme.text};
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+`;
+
+const DocMeta = styled.div`
+  font-size: 12px;
+  color: ${(props) => props.theme.textTertiary};
+`;
+
+const DocStatus = styled.div<{ $isError?: boolean; $isWarning?: boolean }>`
+  font-size: 12px;
+  color: ${(props) => 
+    props.$isError ? props.theme.danger : 
+    props.$isWarning ? props.theme.warning : 
+    props.theme.textTertiary};
+`;
+
+const DocError = styled.div`
+  font-size: 11px;
+  color: ${(props) => props.theme.danger};
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const MoreIconWrapper = styled.div`
+  color: ${(props) => props.theme.textTertiary};
+  opacity: 0;
+  transition: opacity 0.2s;
+
+  ${DocItem}:hover & {
+    opacity: 1;
+  }
 `;
 
 const ModalScrollArea = styled.div`
@@ -2190,654 +2487,53 @@ const MarkdownWrapper = styled.div`
   }
 
   .token.property,
-  .token.variable {
+  .token.tag,
+  .token.constant,
+  .token.symbol,
+  .token.deleted {
     color: ${(props) => props.theme.codeProperty};
   }
 
-  .token.tag {
-    color: ${(props) => props.theme.codeTag};
-  }
-
+  .token.selector,
+  .token.attr-name,
+  .token.string,
   .token.char,
   .token.builtin,
-  .token.string {
+  .token.inserted {
     color: ${(props) => props.theme.codeString};
   }
 
-  .token.selector {
-    color: ${(props) => props.theme.codeSelector};
-  }
-
-  .token.attr-name {
-    color: ${(props) => props.theme.codeAttrName};
-  }
-
-  .token.attr-value,
-  .token.attr-value .token.punctuation {
-    color: ${(props) => props.theme.codeAttrValue};
-  }
-
-  .token.operator {
-    color: ${(props) => props.theme.codeOperator};
-  }
-
-  .token.namespace {
-    opacity: 0.8;
-  }
-
+  .token.operator,
   .token.entity,
   .token.url,
   .language-css .token.string,
   .style .token.string {
-    color: ${(props) => props.theme.codeEntity};
+    color: ${(props) => props.theme.codeOperator};
   }
 
+  .token.atrule,
   .token.attr-value,
-  .token.keyword,
-  .token.control,
-  .token.directive,
-  .token.unit {
+  .token.keyword {
     color: ${(props) => props.theme.codeKeyword};
   }
 
   .token.function,
-  .token.class-name-definition {
+  .token.class-name {
     color: ${(props) => props.theme.codeFunction};
   }
 
-  .token.class-name {
-    color: ${(props) => props.theme.codeClassName};
-  }
-
-  .token.statement,
   .token.regex,
-  .token.atrule {
-    color: ${(props) => props.theme.codeStatement};
-  }
-
-  .token.placeholder,
-  .token.variable {
-    color: ${(props) => props.theme.codePlaceholder};
-  }
-
-  .token.deleted {
-    text-decoration: line-through;
-  }
-
-  .token.inserted {
-    border-bottom: 1px dotted ${(props) => props.theme.codeInserted};
-    text-decoration: none;
-  }
-
-  .token.italic {
-    font-style: italic;
-  }
-
   .token.important,
-  .token.bold {
-    font-weight: bold;
+  .token.variable {
+    color: ${(props) => props.theme.codeAttrValue};
   }
-
-  .token.constant {
-    color: ${(props) => props.theme.codeConstant};
-  }
-
-  .token.parameter {
-    color: ${(props) => props.theme.codeParameter};
-  }
-
-  .token.important {
-    color: ${(props) => props.theme.codeImportant};
-  }
-
-  .token.entity {
-    cursor: help;
-  }
-  
-  ul, ol {
-    margin: 12px 0;
-    padding-left: 24px;
-  }
-  
-  li {
-    margin-bottom: 4px;
-  }
-
-  img {
-    max-width: 100%;
-    height: auto;
-    border-radius: 8px;
-    margin: 12px 0;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    cursor: zoom-in;
-    transition: transform 0.2s ease-in-out;
-
-    &:hover {
-      transform: scale(1.01);
-    }
-  }
-
-  /* 
-   * Minimalist Table Design
-   * Aesthetic: Simple, Light, Clean
-   */
-  .table-wrapper {
-    display: block;
-    width: 100%;
-    overflow-x: auto;
-    margin: 16px 0;
-    border: 1px solid ${(props) => props.theme.divider};
-    border-radius: 6px;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    border: none;
-  }
-
-  th, td {
-    padding: 8px 12px;
-    text-align: left;
-    border-bottom: 1px solid ${(props) => props.theme.divider};
-    border-right: 1px solid ${(props) => props.theme.divider};
-
-    &:last-child {
-      border-right: none;
-    }
-  }
-
-  /* Table Header */
-  thead tr {
-    background: transparent;
-  }
-
-  th {
-    font-weight: 600;
-    color: ${(props) => props.theme.text};
-    border-bottom: 1px solid ${(props) => props.theme.divider};
-    white-space: nowrap;
-  }
-
-  /* Table Body */
-  tbody tr {
-    &:last-child td {
-      border-bottom: none;
-    }
-  }
-
-  td {
-    color: ${(props) => props.theme.text};
-    line-height: 1.4;
-    min-width: 80px;
-    vertical-align: top;
-  }
-
-  /* Mermaid Diagrams */
-  .mermaid-diagram {
-    display: flex;
-    justify-content: center;
-    margin: 16px 0;
-    padding: 16px;
-    background: ${(props) => props.theme.background};
-    border-radius: 8px;
-    overflow-x: auto;
-    max-width: 100%; /* Prevent overflow */
-    
-    &.error {
-      background: ${(props) => props.theme.slateLight};
-      color: ${(props) => props.theme.textTertiary};
-    }
-
-    svg {
-      max-width: 100%;
-      height: auto;
-    }
-  }
-
-  .mermaid-error {
-    font-family: monospace;
-    font-size: 12px;
-    color: ${(props) => props.theme.danger};
-  }
-
-  /* Error Message */
-  .chat-error-message {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    margin: 12px 0;
-    padding: 12px 16px;
-    
-    background: ${(props) => transparentize(0.9, props.theme.danger)};
-    border: 1px solid ${(props) => transparentize(0.8, props.theme.danger)};
-    border-radius: 8px;
-    
-    color: ${(props) => props.theme.text};
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 14px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-    word-break: break-word;
-
-    &::before {
-      content: "!";
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 20px;
-      height: 20px;
-      flex-shrink: 0;
-      background: ${(props) => props.theme.danger};
-      color: ${(props) => props.theme.white};
-      border-radius: 50%;
-      font-weight: 800;
-      font-size: 12px;
-      margin-top: 2px;
-    }
-  }
-`;
-
-const bounce = keyframes`
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
-`;
-
-const TypingIndicator = styled.div`
-  display: flex;
-  gap: 4px;
-  padding: 12px 16px;
-  background: ${(props) => props.theme.slateLight};
-  border-radius: 20px;
-  border-bottom-left-radius: 4px;
-  width: fit-content;
-
-  span {
-    width: 8px;
-    height: 8px;
-    background: ${(props) => props.theme.textTertiary};
-    border-radius: 50%;
-    display: inline-block;
-    animation: ${bounce} 1.4s infinite ease-in-out both;
-    
-    &:nth-child(1) { animation-delay: -0.32s; }
-    &:nth-child(2) { animation-delay: -0.16s; }
-  }
-`;
-
-const SourcesContainer = styled.div`
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-`;
-
-const SourcesLabel = styled.div`
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: ${(props) => props.theme.textTertiary};
-  letter-spacing: 0.05em;
-`;
-
-const SourcesGrid = styled.div`
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-`;
-
-const StyledInput = styled.input`
-  flex: 1;
-  border: none;
-  background: transparent;
-  font-size: 16px;
-  padding: 8px;
-  color: ${(props) => props.theme.text};
-  outline: none;
-  
-  &::placeholder {
-    color: ${(props) => props.theme.placeholder};
-  }
-`;
-
-const TimeSeparatorContainer = styled.div`
-  display: flex;
-  justify-content: center;
-  margin: 16px 0;
-  width: 100%;
-`;
-
-const TimeText = styled.span`
-  font-size: 12px;
-  color: rgb(161, 158, 153);
-  padding: 0 8px;
-`;
-
-const SendButton = styled.button`
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: none;
-  background: ${(props) => props.disabled ? props.theme.slateLight : props.theme.text};
-  color: ${(props) => props.disabled ? props.theme.textTertiary : props.theme.background};
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ${(props) => props.disabled ? "not-allowed" : "pointer"};
-  transition: all 0.2s;
-  flex-shrink: 0;
-  box-shadow: ${(props) => props.disabled ? "none" : "0 2px 8px rgba(0,0,0,0.15)"};
-
-  &:hover:not(:disabled) {
-    transform: scale(1.05);
-    background: ${(props) => props.theme.text};
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-  }
-  
-  .loading-dot {
-    width: 8px;
-    height: 8px;
-    background: currentColor;
-    border-radius: 50%;
-    animation: ${bounce} 1s infinite;
-  }
-`;
-
-const ModalBackBtn = styled.button`
-  background: transparent;
-  border: none;
-  padding: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: ${(props) => props.theme.text};
-  border-radius: 4px;
-  
-  &:hover {
-    background: ${(props) => props.theme.slateLight};
-  }
-`;
-
-const ChunksGrid = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 24px;
-  overflow-y: auto;
-  flex: 1;
-  ${scrollbarMixin}
-`;
-
-const ChunkCard = styled.div`
-  background: ${(props) => props.theme.background};
-  border: 1px solid ${(props) => props.theme.divider};
-  border-radius: 12px;
-  padding: 20px;
-  transition: all 0.2s ease-in-out;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-
-  &:hover {
-    border-color: ${(props) => props.theme.textTertiary};
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    transform: translateY(-1px);
-  }
-`;
-
-const ChunkHeader = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', 'Droid Sans Mono', 'Source Code Pro', monospace;
-  font-size: 11px;
-  color: ${(props) => props.theme.textTertiary};
-  letter-spacing: 0.02em;
-  background: ${(props) => props.theme.slateLight};
-  padding: 4px 8px;
-  border-radius: 6px;
-  width: fit-content;
-`;
-
-const ChunkIndex = styled.span`
-  font-weight: 600;
-  color: ${(props) => props.theme.textSecondary};
-  margin-right: 8px;
-`;
-
-const ChunkId = styled.span`
-  opacity: 0.7;
-`;
-
-const ChunkText = styled.div`
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  color: ${(props) => props.theme.text};
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-`;
-
-const LoadingState = styled.div`
-  padding: 40px;
-  text-align: center;
-  color: ${(props) => props.theme.textTertiary};
-`;
-
-const DocSection = styled.div`
-  margin-bottom: 24px;
-`;
-
-const SectionLabel = styled.div`
-  padding: 8px 28px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: ${(props) => props.theme.textTertiary};
-  letter-spacing: 0.05em;
-`;
-
-const DocList = styled.div`
-  display: flex;
-  flex-direction: column;
-  padding-bottom: 24px;
-  gap: 4px;
-  padding: 0 12px;
-`;
-
-const DocItem = styled.div<{ $disabled?: boolean }>`
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 16px;
-  width: 100%;
-  box-sizing: border-box;
-  cursor: ${(props) => props.$disabled ? "default" : "pointer"};
-  transition: all 0.2s ease;
-  opacity: ${(props) => props.$disabled ? 0.7 : 1};
-  border-radius: 12px;
-  border: 1px solid transparent;
-  
-  &:hover {
-    background: ${(props) => !props.$disabled && props.theme.slateLight};
-    border-color: ${(props) => !props.$disabled && props.theme.divider};
-    transform: ${(props) => !props.$disabled && "translateY(-1px)"};
-    box-shadow: ${(props) => !props.$disabled && "0 2px 8px rgba(0,0,0,0.04)"};
-  }
-`;
-
-const DocIcon = styled.div<{ $isError?: boolean; $isWarning?: boolean }>`
-  color: ${(props) => 
-    props.$isError ? props.theme.danger : 
-    props.$isWarning ? props.theme.warning : 
-    props.theme.textSecondary
-  };
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: ${(props) => 
-    props.$isError ? props.theme.danger || "rgba(255,0,0,0.1)" : 
-    props.$isWarning ? props.theme.warning || "rgba(255,165,0,0.1)" : 
-    props.theme.background
-  };
-  border: 1px solid ${(props) => props.theme.divider};
-  
-  .spin {
-    animation: spin 2s linear infinite;
-  }
-  
-  @keyframes spin {
-    100% { transform: rotate(360deg); }
-  }
-`;
-
-const MoreIconWrapper = styled.div`
-  opacity: 0.5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-`;
-
-const DocInfo = styled.div`
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-`;
-
-const DocTitle = styled.div`
-  font-size: 14px;
-  font-weight: 600;
-  color: ${(props) => props.theme.text};
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const DocMeta = styled.div`
-  font-size: 12px;
-  color: ${(props) => props.theme.textSecondary};
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const DocStatus = styled.div<{ $isError?: boolean; $isWarning?: boolean }>`
-  font-size: 12px;
-  color: ${(props) => 
-    props.$isError ? props.theme.danger : 
-    props.$isWarning ? props.theme.warning : 
-    props.theme.textTertiary
-  };
-`;
-
-const DocError = styled.div`
-  font-size: 11px;
-  color: ${(props) => props.theme.danger};
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 `;
 
 const EmptyStateSmall = styled.div`
-  padding: 40px 20px;
+  padding: 24px;
   text-align: center;
   color: ${(props) => props.theme.textTertiary};
-  font-size: 14px;
-`;
-
-const DeleteAction = styled.button`
-  opacity: 0;
-  background: transparent;
-  border: none;
-  color: ${(props) => props.theme.textTertiary};
-  padding: 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-
-  ${CommandItem}:hover & {
-    opacity: 1;
-  }
-
-  &:hover {
-    background: ${(props) => props.theme.danger || "rgba(255, 0, 0, 0.1)"};
-    color: ${(props) => props.theme.danger};
-  }
-`;
-
-const EmptySearch = styled.div`
-  padding: 32px;
-  text-align: center;
-  color: ${(props) => props.theme.textTertiary};
-  font-size: 14px;
-`;
-
-
-
-
-
-const DocumentsContent = styled.div`
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 16px 0;
-  
-  /* Custom scrollbar */
-  &::-webkit-scrollbar {
-    width: 6px;
-  }
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: ${(props) => props.theme.divider};
-    border-radius: 3px;
-  }
-  &:hover::-webkit-scrollbar-thumb {
-    background: ${(props) => props.theme.textTertiary};
-  }
-`;
-
-const CollectionSelectorWrapper = styled.div`
-  display: flex;
-  align-self: flex-start;
-  padding-bottom: 0;
-  position: relative;
-`;
-
-const CollectionSelectorButton = styled.button`
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
   font-size: 13px;
-  font-weight: 500;
-  color: ${(props) => props.theme.textTertiary};
-  cursor: pointer;
-  transition: all 0.2s ease;
-  margin-left: -10px;
-
-  &:hover, &[aria-expanded="true"] {
-    background: ${(props) => props.theme.slateLight};
-    color: ${(props) => props.theme.text};
-  }
-  
-  svg {
-    opacity: 0.8;
-  }
 `;
 
 export default observer(RAGChat);

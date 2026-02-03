@@ -1572,5 +1572,6 @@
   "Chunk Overlap must be smaller than Chunk Size": "Chunk Overlap must be smaller than Chunk Size",
   "Please fill in all required fields": "Please fill in all required fields",
   "Score Threshold": "Score Threshold",
-  "Score Threshold must be a positive number": "Score Threshold must be a positive number"
+  "Score Threshold must be a positive number": "Score Threshold must be a positive number",
+  "Search chats...": "Search chats..."
 }
