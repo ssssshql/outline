@@ -247,11 +247,13 @@ const codeBlockStyle = (props: Props) => css`
   }
 
   .token.deleted {
-    text-decoration: line-through;
+    color: ${props.theme.textDiffDeleted};
+    background-color: ${props.theme.textDiffDeletedBackground};
   }
 
   .token.inserted {
-    border-bottom: 1px dotted ${props.theme.codeInserted};
+    color: ${props.theme.textDiffInserted};
+    background-color: ${props.theme.textDiffInsertedBackground};
     text-decoration: none;
   }
 
@@ -1926,16 +1928,6 @@ table {
   }
 
   .${EditorStyleHelper.tableAddRow},
-  .${EditorStyleHelper.tableAddColumn},
-  .${EditorStyleHelper.tableGrip},
-  .${EditorStyleHelper.tableGripColumn},
-  .${EditorStyleHelper.tableGripRow} {
-    @media print {
-      display: none;
-    }
-  }
-
-  .${EditorStyleHelper.tableAddRow},
   .${EditorStyleHelper.tableAddColumn} {
     display: block;
     position: absolute;
@@ -2153,6 +2145,16 @@ table {
     &.dragging::after {
       background: ${props.theme.accent};
       opacity: 0.5;
+    }
+  }
+
+  .${EditorStyleHelper.tableAddRow},
+  .${EditorStyleHelper.tableAddColumn},
+  .${EditorStyleHelper.tableGrip},
+  .${EditorStyleHelper.tableGripColumn},
+  .${EditorStyleHelper.tableGripRow} {
+    @media print {
+      display: none;
     }
   }
 }

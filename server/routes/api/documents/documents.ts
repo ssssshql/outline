@@ -13,7 +13,8 @@ import mime from "mime-types";
 import type { Order, ScopeOptions, WhereOptions } from "sequelize";
 import { Op, Sequelize } from "sequelize";
 import { randomUUID } from "node:crypto";
-import type { NavigationNode } from "@shared/types";
+import type { DirectionFilter, SortFilter } from "@shared/types";
+import { type NavigationNode } from "@shared/types";
 import {
   FileOperationFormat,
   FileOperationState,
@@ -81,7 +82,7 @@ import FileStorage from "@server/storage/files";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import ZipHelper from "@server/utils/ZipHelper";
-import { convertBareUrlsToEmbedMarkdown } from "@server/utils/embedHelper";
+import { convertBareUrlsToEmbedMarkdown } from "@server/utils/embeds";
 import { getTeamFromContext } from "@server/utils/passport";
 import { assertPresent } from "@server/validation";
 import pagination from "../middlewares/pagination";
@@ -1010,8 +1011,15 @@ router.post(
   rateLimiter(RateLimiterStrategy.OneHundredPerMinute),
   validate(T.DocumentsSearchTitlesSchema),
   async (ctx: APIContext<T.DocumentsSearchTitlesReq>) => {
-    const { query, statusFilter, dateFilter, collectionId, userId } =
-      ctx.input.body;
+    const {
+      query,
+      statusFilter,
+      dateFilter,
+      collectionId,
+      userId,
+      sort,
+      direction,
+    } = ctx.input.body;
     const { offset, limit } = ctx.state.pagination;
     const { user } = ctx.state.auth;
     let collaboratorIds = undefined;
@@ -1035,6 +1043,8 @@ router.post(
       collaboratorIds,
       offset,
       limit,
+      sort: sort as SortFilter,
+      direction: direction as DirectionFilter,
     });
     const policies = presentPolicies(user, documents);
     const data = await Promise.all(
@@ -1066,6 +1076,8 @@ router.post(
       shareId,
       snippetMinWords,
       snippetMaxWords,
+      sort,
+      direction,
     } = ctx.input.body;
     const { offset, limit } = ctx.state.pagination;
     const { user } = ctx.state.auth;
@@ -1119,6 +1131,8 @@ router.post(
         limit,
         snippetMinWords,
         snippetMaxWords,
+        sort: sort as SortFilter,
+        direction: direction as DirectionFilter,
       });
     } else {
       if (!user) {
@@ -1163,6 +1177,8 @@ router.post(
         limit,
         snippetMinWords,
         snippetMaxWords,
+        sort: sort as SortFilter,
+        direction: direction as DirectionFilter,
       });
     }
 

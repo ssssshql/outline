@@ -20,10 +20,11 @@ import {
   TableMergeCellsIcon,
   TableSplitCellsIcon,
   PaletteIcon,
-  CollapsedIcon,
+  CollapseIcon,
 } from "outline-icons";
 import { v4 as uuidv4 } from "uuid";
 import CellBackgroundColorPicker from "../components/CellBackgroundColorPicker";
+import HighlightColorPicker from "../components/HighlightColorPicker";
 import type { EditorState } from "prosemirror-state";
 
 import { getMarksBetween } from "@shared/editor/queries/getMarksBetween";
@@ -223,6 +224,45 @@ export default function formattingMenuItems(
           active: isMarkActive(schema.marks.highlight, { color: preset.hex }),
           attrs: { color: preset.hex },
         })),
+        ...(highlight &&
+        highlight.mark.attrs.color &&
+        !Highlight.isPresetColor(highlight.mark.attrs.color)
+          ? [
+              {
+                name: "highlight",
+                label: highlight.mark.attrs.color,
+                icon: (
+                  <CircleIcon
+                    retainColor
+                    color={highlight.mark.attrs.color}
+                  />
+                ),
+                active: isMarkActive(schema.marks.highlight, {
+                  color: highlight.mark.attrs.color,
+                }),
+                attrs: { color: highlight.mark.attrs.color },
+              },
+            ]
+          : []),
+        {
+          icon: <CircleIcon retainColor color="rainbow" />,
+          label: "Custom",
+          children: [
+            {
+              content: (
+                <HighlightColorPicker
+                  activeColor={
+                    highlight?.mark.attrs.color || Highlight.presetColors[0].hex
+                  }
+                />
+              ),
+              preventCloseCondition: () =>
+                !!document.activeElement?.matches(
+                  ".ProseMirror.ProseMirror-focused"
+                ),
+            },
+          ],
+        },
       ],
     },
     {
@@ -290,7 +330,8 @@ export default function formattingMenuItems(
     },
     {
       name: "container_toggle",
-      icon: <CollapsedIcon />,
+      icon: <CollapseIcon />,
+      tooltip: dictionary.toggleBlock,
       active: isNodeActive(schema.nodes.container_toggle),
       attrs: { id: uuidv4() },
       visible: !isCodeBlock && (!isMobile || isEmpty),
