@@ -46,10 +46,10 @@ async function build() {
   console.log("Compiling…");
   await Promise.all([
     execAsync(
-      "yarn babel --extensions .ts,.tsx --quiet -d ./build/server ./server"
+      "yarn babel --extensions .ts,.tsx --quiet -d ./build/server ./server",
     ),
     execAsync(
-      "yarn babel --extensions .ts,.tsx --quiet -d ./build/shared ./shared"
+      "yarn babel --extensions .ts,.tsx --quiet -d ./build/shared ./shared",
     ),
   ]);
 
@@ -58,7 +58,7 @@ async function build() {
 
     if (hasServer) {
       await execAsync(
-        `yarn babel --extensions .ts,.tsx --quiet -d "./build/plugins/${plugin}/server" "./plugins/${plugin}/server"`
+        `yarn babel --extensions .ts,.tsx --quiet -d "./build/plugins/${plugin}/server" "./plugins/${plugin}/server"`,
       );
     }
 
@@ -66,7 +66,7 @@ async function build() {
 
     if (hasShared) {
       await execAsync(
-        `yarn babel --extensions .ts,.tsx --quiet -d "./build/plugins/${plugin}/shared" "./plugins/${plugin}/shared"`
+        `yarn babel --extensions .ts,.tsx --quiet -d "./build/plugins/${plugin}/shared" "./plugins/${plugin}/shared"`,
       );
     }
   }
@@ -75,19 +75,19 @@ async function build() {
   console.log("Copying static files…");
   await Promise.all([
     execAsync(
-      "cp ./server/collaboration/Procfile ./build/server/collaboration/Procfile"
+      "cp ./server/collaboration/Procfile ./build/server/collaboration/Procfile",
     ),
     execAsync(
-      "cp ./server/static/error.dev.html ./build/server/error.dev.html"
+      "cp ./server/static/error.dev.html ./build/server/error.dev.html",
     ),
     execAsync(
-      "cp ./server/static/error.prod.html ./build/server/error.prod.html"
+      "cp ./server/static/error.prod.html ./build/server/error.prod.html",
     ),
     execAsync("cp package.json ./build"),
     ...d.map(async (plugin) =>
       execAsync(
-        `mkdir -p ./build/plugins/${plugin} && cp ./plugins/${plugin}/plugin.json ./build/plugins/${plugin}/plugin.json 2>/dev/null || :`
-      )
+        `mkdir -p ./build/plugins/${plugin} && cp ./plugins/${plugin}/plugin.json ./build/plugins/${plugin}/plugin.json 2>/dev/null || :`,
+      ),
     ),
   ]);
 

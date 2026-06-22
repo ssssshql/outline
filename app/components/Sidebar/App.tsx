@@ -119,6 +119,12 @@ function AppSidebar() {
               onClick={handleSearchClick}
             />
             {can.createDocument && <DraftsLink />}
+            <SidebarLink
+              to={ragChatPath()}
+              icon={<CommentIcon />}
+              label={t("AI Assistant")}
+              exact={false}
+            />
           </Section>
         </Overflow>
         <Scrollable flex shadow ref={scrollRef}>
@@ -141,12 +147,6 @@ function AppSidebar() {
               {can.createDocument && <TrashLink />}
               <SidebarAction action={inviteUser} />
             </Section>
-            <SidebarLink
-              to={ragChatPath()}
-              icon={<CommentIcon />}
-              label={t("AI Assistant")}
-              exact={false}
-            />
           </SidebarScrollProvider>
         </Scrollable>
       </DragActiveProvider>

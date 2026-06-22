@@ -1314,7 +1314,7 @@ function RAGChat() {
                 >
                   <HeroIcon>
                     {team && (
-                      <TeamLogo model={team} style={{ width: 80, height: 80 }} />
+                      <TeamLogo model={team} size={80} />
                     )}
                   </HeroIcon>
                   <HeroTitle>{t("How can I help you today?")}</HeroTitle>

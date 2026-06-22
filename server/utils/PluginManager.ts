@@ -140,12 +140,14 @@ export class PluginManager {
       return;
     }
     const rootDir = env.ENVIRONMENT === "test" ? "" : "build";
+    const pattern = `${rootDir}/plugins/*/server/!(*.test|schema).[jt]s`.replace(
+      /\\/g,
+      "/"
+    );
 
-    glob
-      .sync(path.join(rootDir, "plugins/*/server/!(*.test|schema).[jt]s"))
-      .forEach((filePath: string) =>
-        require(path.join(process.cwd(), filePath))
-      );
+    glob.sync(pattern).forEach((filePath: string) => {
+      require(path.join(process.cwd(), filePath));
+    });
     this.loaded = true;
   }
 
