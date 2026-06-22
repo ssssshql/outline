@@ -1,5 +1,6 @@
 import { subMinutes } from "date-fns";
 import { action } from "mobx";
+import { errToString } from "@shared/utils/error";
 import type { UnfurlResourceType } from "@shared/types";
 import Unfurl from "~/models/Unfurl";
 import { client } from "~/utils/ApiClient";
@@ -22,6 +23,19 @@ class UnfurlsStore extends Store<Unfurl<any>> {
     url: string;
     documentId?: string;
   }): Promise<Unfurl<UnfurlType> | undefined> => {
+    try {
+      const protocol = new URL(url).protocol;
+      if (
+        protocol !== "http:" &&
+        protocol !== "https:" &&
+        protocol !== "mention:"
+      ) {
+        return;
+      }
+    } catch (_err) {
+      return;
+    }
+
     const unfurl = this.get(url);
 
     if (unfurl) {
@@ -74,7 +88,10 @@ class UnfurlsStore extends Store<Unfurl<any>> {
         data,
       } as Unfurl<UnfurlType>);
     } catch (err) {
-      Logger.error(`Failed to unfurl url ${url}`, err);
+      Logger.warn("Failed to unfurl url", {
+        url,
+        message: errToString(err),
+      });
       return;
     } finally {
       this.isFetching = false;

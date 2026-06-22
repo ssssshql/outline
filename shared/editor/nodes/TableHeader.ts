@@ -1,12 +1,18 @@
-import type { Token } from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
 import type { NodeSpec } from "prosemirror-model";
 import type { EditorState } from "prosemirror-state";
 import { Plugin, PluginKey } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { DecorationSet, Decoration } from "prosemirror-view";
-import { moveTableColumn, TableMap } from "prosemirror-tables";
+import { isInTable, moveTableColumn, TableMap } from "prosemirror-tables";
 import { addColumnBefore, selectColumn } from "../commands/table";
-import { getCellAttrs, setCellAttrs } from "../lib/table";
+import { isMobile } from "../../utils/browser";
+import {
+  getCellAttrs,
+  isValidCellAlignment,
+  isValidCellMarks,
+  setCellAttrs,
+} from "../lib/table";
 import {
   getCellsInColumn,
   getCellsInRow,
@@ -125,16 +131,30 @@ function setupColumnDragTracking(
     document.removeEventListener("mouseup", handleMouseUp);
 
     document.body.classList.remove(EditorStyleHelper.tableDragging);
-    clearDragState();
 
-    if (isDragging && currentToIndex !== fromIndex) {
-      moveTableColumn({ from: fromIndex, to: currentToIndex })(
-        view.state,
-        view.dispatch
-      );
-      // Select the column at its new position
-      selectColumn(currentToIndex)(view.state, view.dispatch);
+    if (isDragging && currentToIndex !== fromIndex && isInTable(view.state)) {
+      // Verify both indices are still valid for the current table. The document
+      // may have changed during the drag (e.g. collaborative editing)
+      const currentCols = getCellsInRow(0)(view.state);
+      const inBounds =
+        fromIndex >= 0 &&
+        fromIndex < currentCols.length &&
+        currentToIndex >= 0 &&
+        currentToIndex < currentCols.length;
+
+      if (inBounds) {
+        const moved = moveTableColumn({ from: fromIndex, to: currentToIndex })(
+          view.state,
+          view.dispatch
+        );
+        if (moved) {
+          // Select the column at its new position
+          selectColumn(currentToIndex)(view.state, view.dispatch);
+        }
+      }
     }
+
+    clearDragState();
   };
 
   document.addEventListener("mousemove", handleMouseMove);
@@ -205,10 +225,12 @@ export default class TableHeader extends Node {
       attrs: {
         colspan: { default: 1 },
         rowspan: { default: 1 },
-        alignment: { default: null },
+        alignment: { default: null, validate: isValidCellAlignment },
         colwidth: { default: null },
         marks: {
           default: undefined,
+          validate: (value: unknown) =>
+            isValidCellMarks(value, this.editor?.schema),
         },
       },
     };
@@ -221,7 +243,9 @@ export default class TableHeader extends Node {
   parseMarkdown() {
     return {
       block: "th",
-      getAttrs: (tok: Token) => ({ alignment: tok.info }),
+      getAttrs: (tok: Token) => ({
+        alignment: isValidCellAlignment(tok.info) ? tok.info : null,
+      }),
     };
   }
 
@@ -303,7 +327,9 @@ export default class TableHeader extends Node {
             )
           );
 
-          if (!isDragging) {
+          // The add-column affordance is too small to tap on mobile, where
+          // columns can be added via the inline menu instead.
+          if (!isDragging && !isMobile()) {
             if (index === 0) {
               decorations.push(buildAddColumnDecoration(pos, index));
             }

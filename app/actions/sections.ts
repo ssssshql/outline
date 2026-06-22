@@ -13,7 +13,14 @@ ActiveCollectionSection.priority = 0.8;
 
 export const DeveloperSection = ({ t }: ActionContext) => t("Debug");
 
+export const DateSection = ({ t }: ActionContext) => t("Date");
+
+DateSection.priority = 1;
+
 export const DocumentSection = ({ t }: ActionContext) => t("Document");
+
+export const SearchResultsSection = ({ t }: ActionContext) =>
+  t("Search results");
 
 export const DocumentsSection = ({ t }: ActionContext) => t("Documents");
 
@@ -23,6 +30,15 @@ export const ActiveDocumentSection = ({ t, stores }: ActionContext) => {
 };
 
 ActiveDocumentSection.priority = 0.9;
+
+export const TemplateSection = ({ t }: ActionContext) => t("Template");
+
+export const ActiveTemplateSection = ({ t, stores }: ActionContext) => {
+  const activeTemplate = stores.templates.active;
+  return `${t("Template")} · ${activeTemplate?.titleWithDefault}`;
+};
+
+ActiveTemplateSection.priority = 0.9;
 
 export const RecentSection = ({ t }: ActionContext) => t("Recently viewed");
 
@@ -49,7 +65,7 @@ export const ShareSection = ({ t }: ActionContext) => t("Share");
 export const TeamSection = ({ t }: ActionContext) => t("Workspace");
 
 export const RecentSearchesSection = ({ t }: ActionContext) =>
-  t("Recent searches");
+  t("Recently viewed");
 
 RecentSearchesSection.priority = -0.1;
 

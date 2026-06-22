@@ -148,14 +148,122 @@ Jane,24,`;
         expect(result.title).toEqual("");
         expect(result.text).toContain("Subtitle");
       });
+
+      it("should convert frontmatter to yaml codeblock", async () => {
+        const md = `---
+title: Test Document
+date: 2024-01-15
+tags: [test, markdown]
+---
+
+# My Title
+
+Content after frontmatter`;
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        // Frontmatter should be converted to a YAML codeblock
+        expect(result.text).toContain("```yaml");
+        expect(result.text).toContain("title: Test Document");
+        expect(result.text).toContain("date: 2024-01-15");
+        expect(result.text).toContain("tags: [test, markdown]");
+        expect(result.text).toContain("```");
+        // Content should still be present
+        expect(result.text).toContain("Content after frontmatter");
+        // H1 should be extracted as title
+        expect(result.title).toEqual("My Title");
+      });
+
+      it("should handle markdown without frontmatter", async () => {
+        const md = "# Title\n\nRegular content";
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        expect(result.title).toEqual("Title");
+        expect(result.text).toContain("Regular content");
+        expect(result.text).not.toContain("```yaml");
+      });
+
+      it("should handle frontmatter with no content after", async () => {
+        const md = `---
+title: Only Frontmatter
+---`;
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        expect(result.text).toContain("```yaml");
+        expect(result.text).toContain("title: Only Frontmatter");
+        expect(result.text).toContain("```");
+        expect(result.title).toEqual("");
+      });
+
+      it("should not convert incomplete frontmatter", async () => {
+        const md = `---
+title: Test
+Content without closing delimiter`;
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        // Should not convert as it's not proper frontmatter
+        expect(result.text).not.toContain("```yaml");
+        expect(result.text).toContain("title: Test");
+      });
+
+      it("should not convert frontmatter if not at start", async () => {
+        const md = `# Title
+
+Some content
+
+---
+title: Test
+---
+
+More content`;
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        // Should not convert as frontmatter must be at the start
+        expect(result.text).not.toContain("```yaml");
+      });
+
+      it("should handle invalid YAML in frontmatter", async () => {
+        const md = `---
+invalid: yaml: content: here
+---
+
+Content`;
+        const result = await DocumentConverter.convert(
+          md,
+          "test.md",
+          "text/markdown"
+        );
+
+        // Should not convert invalid YAML
+        expect(result.text).not.toContain("```yaml");
+      });
     });
   });
 
   describe("htmlToProsemirror", () => {
-    it("should convert basic HTML to Prosemirror", () => {
+    it("should convert basic HTML to Prosemirror", async () => {
       const html = "<p>Hello world</p>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.type.name).toBe("doc");
       expect(doc.content.childCount).toBe(1);
@@ -163,10 +271,10 @@ Jane,24,`;
       expect(doc.content.child(0).textContent).toBe("Hello world");
     });
 
-    it("should convert HTML with heading", () => {
+    it("should convert HTML with heading", async () => {
       const html = "<h1>Title</h1><p>Content</p>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.content.childCount).toBe(2);
       expect(doc.content.child(0).type.name).toBe("heading");
@@ -175,46 +283,46 @@ Jane,24,`;
       expect(doc.content.child(1).type.name).toBe("paragraph");
     });
 
-    it("should remove script tags", () => {
+    it("should remove script tags", async () => {
       const html = "<p>Safe content</p><script>alert('xss')</script>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.textContent).toBe("Safe content");
       expect(doc.textContent).not.toContain("alert");
     });
 
-    it("should remove style tags", () => {
+    it("should remove style tags", async () => {
       const html = "<style>body { color: red; }</style><p>Content</p>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.textContent).toBe("Content");
       expect(doc.textContent).not.toContain("color");
     });
 
-    it("should handle Buffer input", () => {
+    it("should handle Buffer input", async () => {
       const html = Buffer.from("<p>From buffer</p>", "utf8");
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.content.child(0).textContent).toBe("From buffer");
     });
 
-    it("should convert HTML with lists", () => {
+    it("should convert HTML with lists", async () => {
       const html = "<ul><li>Item 1</li><li>Item 2</li></ul>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.content.childCount).toBe(1);
       expect(doc.content.child(0).type.name).toBe("bullet_list");
       expect(doc.content.child(0).content.childCount).toBe(2);
     });
 
-    it("should convert HTML with bold and italic", () => {
+    it("should convert HTML with bold and italic", async () => {
       const html = "<p><strong>Bold</strong> and <em>italic</em></p>";
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       const paragraph = doc.content.child(0);
       expect(paragraph.type.name).toBe("paragraph");
@@ -229,7 +337,7 @@ Jane,24,`;
       expect(italicText.marks.some((m) => m.type.name === "em")).toBe(true);
     });
 
-    it("should handle full HTML document", () => {
+    it("should handle full HTML document", async () => {
       const html = `
         <!DOCTYPE html>
         <html>
@@ -244,7 +352,7 @@ Jane,24,`;
         </html>
       `;
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.content.childCount).toBe(2);
       expect(doc.content.child(0).type.name).toBe("heading");
@@ -253,10 +361,10 @@ Jane,24,`;
       expect(doc.content.child(1).textContent).toBe("Paragraph content");
     });
 
-    it("should remove emoticon images", () => {
+    it("should remove emoticon images", async () => {
       const html = `<p>Hello <img class="emoticon" src="smile.png" alt=":)"> world</p>`;
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       // Emoticon image should be removed, text content remains
       expect(doc.textContent).not.toContain(":)");
@@ -264,28 +372,132 @@ Jane,24,`;
       expect(doc.textContent).toContain("world");
     });
 
-    it("should remove Jira icon images", () => {
+    it("should remove Jira icon images", async () => {
       const html = `
         <p>Issue: <span class="jira-issue-key"><img class="icon" src="icon.png">ABC-123</span></p>
       `;
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       expect(doc.textContent).toBe("Issue: ABC-123");
     });
 
-    it("should apply Confluence image sizing", () => {
+    it("should apply Confluence image sizing", async () => {
       const html = `
         <p><img src="image.png" data-width="800" data-height="600" width="400"></p>
       `;
 
-      const doc = DocumentConverter.htmlToProsemirror(html);
+      const doc = await DocumentConverter.htmlToProsemirror(html);
 
       const paragraph = doc.content.child(0);
       const image = paragraph.content.child(0);
       expect(image.type.name).toBe("image");
       expect(image.attrs.width).toBe(400);
       expect(image.attrs.height).toBe(300);
+    });
+
+    it("should extract dimensions from PNG data URI images", async () => {
+      // Minimal 2x3 PNG (IHDR: width=2, height=3)
+      const pngBuffer = Buffer.alloc(33);
+      // PNG signature
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(
+        pngBuffer
+      );
+      // IHDR chunk length (13 bytes)
+      pngBuffer.writeUInt32BE(13, 8);
+      // "IHDR"
+      Buffer.from("IHDR").copy(pngBuffer, 12);
+      // Width = 200
+      pngBuffer.writeUInt32BE(200, 16);
+      // Height = 150
+      pngBuffer.writeUInt32BE(150, 20);
+
+      const base64 = pngBuffer.toString("base64");
+      const html = `<p><img src="data:image/png;base64,${base64}"></p>`;
+
+      const doc = await DocumentConverter.htmlToProsemirror(html);
+
+      const paragraph = doc.content.child(0);
+      const image = paragraph.content.child(0);
+      expect(image.type.name).toBe("image");
+      expect(image.attrs.width).toBe(200);
+      expect(image.attrs.height).toBe(150);
+    });
+
+    it("should extract dimensions from JPEG data URI images", async () => {
+      // Minimal JPEG with SOF0 marker
+      const jpegBuffer = Buffer.alloc(20);
+      // JPEG SOI marker
+      jpegBuffer[0] = 0xff;
+      jpegBuffer[1] = 0xd8;
+      // SOF0 marker
+      jpegBuffer[2] = 0xff;
+      jpegBuffer[3] = 0xc0;
+      // Segment length
+      jpegBuffer.writeUInt16BE(17, 4);
+      // Precision
+      jpegBuffer[6] = 8;
+      // Height = 300
+      jpegBuffer.writeUInt16BE(300, 7);
+      // Width = 400
+      jpegBuffer.writeUInt16BE(400, 9);
+
+      const base64 = jpegBuffer.toString("base64");
+      const html = `<p><img src="data:image/jpeg;base64,${base64}"></p>`;
+
+      const doc = await DocumentConverter.htmlToProsemirror(html);
+
+      const paragraph = doc.content.child(0);
+      const image = paragraph.content.child(0);
+      expect(image.type.name).toBe("image");
+      expect(image.attrs.width).toBe(400);
+      expect(image.attrs.height).toBe(300);
+    });
+
+    it("should extract dimensions from GIF data URI images", async () => {
+      // Minimal GIF header
+      const gifBuffer = Buffer.alloc(10);
+      // GIF signature
+      Buffer.from("GIF89a").copy(gifBuffer);
+      // Width = 320 (little-endian)
+      gifBuffer.writeUInt16LE(320, 6);
+      // Height = 240 (little-endian)
+      gifBuffer.writeUInt16LE(240, 8);
+
+      const base64 = gifBuffer.toString("base64");
+      const html = `<p><img src="data:image/gif;base64,${base64}"></p>`;
+
+      const doc = await DocumentConverter.htmlToProsemirror(html);
+
+      const paragraph = doc.content.child(0);
+      const image = paragraph.content.child(0);
+      expect(image.type.name).toBe("image");
+      expect(image.attrs.width).toBe(320);
+      expect(image.attrs.height).toBe(240);
+    });
+
+    it("should not override existing width/height on data URI images", async () => {
+      // PNG with dimensions 200x150 but HTML attributes say 100x75
+      const pngBuffer = Buffer.alloc(33);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(
+        pngBuffer
+      );
+      pngBuffer.writeUInt32BE(13, 8);
+      Buffer.from("IHDR").copy(pngBuffer, 12);
+      pngBuffer.writeUInt32BE(200, 16);
+      pngBuffer.writeUInt32BE(150, 20);
+
+      const base64 = pngBuffer.toString("base64");
+      const html = `<p><img src="data:image/png;base64,${base64}" width="100" height="75"></p>`;
+
+      const doc = await DocumentConverter.htmlToProsemirror(html);
+
+      const paragraph = doc.content.child(0);
+      const image = paragraph.content.child(0);
+      expect(image.type.name).toBe("image");
+      // Should use the HTML attributes, not the parsed dimensions
+      expect(image.attrs.width).toBe(100);
+      expect(image.attrs.height).toBe(75);
     });
   });
 });

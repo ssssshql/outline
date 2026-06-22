@@ -1,5 +1,6 @@
 import fs from "fs-extra";
-import truncate from "lodash/truncate";
+import { truncate } from "es-toolkit/compat";
+import { toError } from "@shared/utils/error";
 import type { NavigationNode } from "@shared/types";
 import { FileOperationState, NotificationEventType } from "@shared/types";
 import { bytesToHumanReadable } from "@shared/utils/files";
@@ -83,6 +84,7 @@ export default abstract class ExportTask extends BaseTask<Props> {
       if (user.subscribedToEventType(NotificationEventType.ExportCompleted)) {
         await new ExportSuccessEmail({
           to: user.email,
+          language: user.language,
           userId: user.id,
           id: fileOperation.id,
           teamUrl: team.url,
@@ -92,11 +94,12 @@ export default abstract class ExportTask extends BaseTask<Props> {
     } catch (error) {
       await this.updateFileOperation(fileOperation, {
         state: FileOperationState.Error,
-        error,
+        error: toError(error),
       });
       if (user.subscribedToEventType(NotificationEventType.ExportCompleted)) {
         await new ExportFailureEmail({
           to: user.email,
+          language: user.language,
           userId: user.id,
           teamUrl: team.url,
           teamId: team.id,
@@ -221,7 +224,7 @@ export default abstract class ExportTask extends BaseTask<Props> {
    */
   private async updateFileOperation(
     fileOperation: FileOperation,
-    options: Partial<FileOperation> & { error?: Error }
+    options: Omit<Partial<FileOperation>, "error"> & { error?: Error }
   ) {
     await fileOperation.update(
       {

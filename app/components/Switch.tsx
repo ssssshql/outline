@@ -1,4 +1,5 @@
 import * as RadixSwitch from "@radix-ui/react-switch";
+import { darken } from "polished";
 import * as React from "react";
 import styled from "styled-components";
 import { s } from "@shared/styles";
@@ -28,6 +29,7 @@ interface Props extends Omit<
   disabled?: boolean;
   /** Callback when the switch state changes */
   onChange?: (checked: boolean) => void;
+  inForm?: boolean;
 }
 
 function Switch(
@@ -35,6 +37,7 @@ function Switch(
     width = 32,
     height = 18,
     labelPosition = "left",
+    inForm = true,
     label,
     disabled,
     className,
@@ -71,7 +74,7 @@ function Switch(
 
   if (label) {
     return (
-      <Wrapper>
+      <Wrapper $inForm={inForm}>
         <Label
           disabled={disabled}
           htmlFor={props.id}
@@ -100,8 +103,8 @@ function Switch(
   return component;
 }
 
-const Wrapper = styled.div`
-  padding-bottom: 8px;
+const Wrapper = styled.div<{ $inForm?: boolean }>`
+  padding-bottom: ${(props) => (props.$inForm ? 8 : 0)}px;
   ${undraggableOnDesktop()}
 `;
 
@@ -124,6 +127,32 @@ const Label = styled.label<{
   ${(props) => (props.disabled ? `opacity: 0.75;` : "")}
 `;
 
+const HOVER_EXTRA = 3;
+
+const StyledSwitchThumb = styled(RadixSwitch.Thumb)<{
+  width: number;
+  height: number;
+}>`
+  display: block;
+  width: ${(props) => props.height - 8}px;
+  height: ${(props) => props.height - 8}px;
+  background-color: white;
+  border-radius: ${(props) => (props.height - 8) / 2}px;
+  transition:
+    transform 0.2s,
+    width 0.2s;
+  transform: translateX(0);
+  will-change: transform, width;
+
+  &[data-state="checked"] {
+    transform: translateX(${(props) => props.width - props.height}px);
+  }
+
+  [dir="rtl"] &[data-state="checked"] {
+    transform: translateX(${(props) => -(props.width - props.height)}px);
+  }
+`;
+
 const StyledSwitchRoot = styled(RadixSwitch.Root)<{
   width: number;
   height: number;
@@ -135,7 +164,7 @@ const StyledSwitchRoot = styled(RadixSwitch.Root)<{
   border-radius: ${(props) => props.height}px;
   border: none;
   cursor: var(--pointer);
-  transition: background-color 0.4s;
+  transition: background-color 0.2s;
   padding: 0 4px;
   flex-shrink: 0;
 
@@ -148,27 +177,35 @@ const StyledSwitchRoot = styled(RadixSwitch.Root)<{
     background-color: ${s("accent")};
   }
 
+  &:active:not(:disabled) {
+    background-color: ${(props) => darken(0.1, props.theme.slate)};
+  }
+
+  &:active:not(:disabled)[data-state="checked"] {
+    background-color: ${(props) => darken(0.1, props.theme.accent)};
+  }
+
   &:disabled {
     opacity: 0.75;
     cursor: default;
   }
-`;
 
-const StyledSwitchThumb = styled(RadixSwitch.Thumb)<{
-  width: number;
-  height: number;
-}>`
-  display: block;
-  width: ${(props) => props.height - 8}px;
-  height: ${(props) => props.height - 8}px;
-  background-color: white;
-  border-radius: 50%;
-  transition: transform 0.4s;
-  transform: translateX(0);
-  will-change: transform;
+  &:hover:not(:disabled) ${StyledSwitchThumb} {
+    width: ${(props) => props.height - 8 + HOVER_EXTRA}px;
+  }
 
-  &[data-state="checked"] {
-    transform: translateX(${(props) => props.width - props.height}px);
+  &:hover:not(:disabled)[data-state="checked"] ${StyledSwitchThumb} {
+    transform: translateX(
+      ${(props) => props.width - props.height - HOVER_EXTRA}px
+    );
+  }
+
+  [dir="rtl"]
+    &:hover:not(:disabled)[data-state="checked"]
+    ${StyledSwitchThumb} {
+    transform: translateX(
+      ${(props) => -(props.width - props.height - HOVER_EXTRA)}px
+    );
   }
 `;
 

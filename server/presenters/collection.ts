@@ -20,7 +20,7 @@ export default async function presentCollection(
 ) {
   const asData = !ctx || Number(ctx?.headers["x-api-version"] ?? 0) >= 3;
 
-  const res: Record<string, any> = {
+  const res: Record<string, unknown> = {
     id: collection.id,
     url: collection.path,
     urlId: collection.urlId,
@@ -40,15 +40,9 @@ export default async function presentCollection(
     description: asData ? undefined : collection.description,
     sort: collection.sort,
     icon: collection.icon,
-    index: collection.index,
     color: collection.color,
-    permission: collection.permission,
-    commenting: collection.commenting,
-    sharing: collection.sharing,
     createdAt: collection.createdAt,
     updatedAt: collection.updatedAt,
-    deletedAt: collection.deletedAt,
-    archivedAt: collection.archivedAt,
     archivedBy: undefined,
   };
 
@@ -57,6 +51,13 @@ export default async function presentCollection(
   }
 
   if (!options.isPublic) {
+    res.index = collection.index;
+    res.sharing = collection.sharing;
+    res.commenting = collection.commenting;
+    res.templateManagement = collection.templateManagement;
+    res.permission = collection.permission;
+    res.deletedAt = collection.deletedAt;
+    res.archivedAt = collection.archivedAt;
     res.archivedBy =
       collection.archivedBy && presentUser(collection.archivedBy);
     res.sourceMetadata = collection.sourceMetadata

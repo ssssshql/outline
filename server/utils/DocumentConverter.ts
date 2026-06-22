@@ -1,11 +1,7 @@
-import { parse } from "@fast-csv/parse";
-import { JSDOM } from "jsdom";
-import escapeRegExp from "lodash/escapeRegExp";
-import { simpleParser } from "mailparser";
-import mammoth from "mammoth";
+import { escapeRegExp } from "es-toolkit/compat";
 import type { Node } from "prosemirror-model";
 import { DOMParser as ProsemirrorDOMParser } from "prosemirror-model";
-import { ProsemirrorHelper as SharedProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
+import yaml from "js-yaml";
 import { schema, serializer } from "@server/editor";
 import { FileImportError } from "@server/errors";
 import { trace, traceFunction } from "@server/logging/tracing";
@@ -42,7 +38,7 @@ export class DocumentConverter {
     // Route to appropriate conversion method
     const html = await this.convertToHtml(content, fileName, mimeType);
     if (html !== undefined) {
-      doc = this.htmlToProsemirror(html);
+      doc = await this.htmlToProsemirror(html);
     } else {
       const markdown = await this.convertToMarkdown(
         content,
@@ -54,7 +50,7 @@ export class DocumentConverter {
 
     // Extract title from first H1 heading
     let title = "";
-    const headings = SharedProsemirrorHelper.getHeadings(doc);
+    const headings = ProsemirrorHelper.getHeadings(doc);
     if (headings.length > 0 && headings[0].level === 1) {
       title = headings[0].title;
       doc = ProsemirrorHelper.removeFirstHeading(doc);
@@ -82,11 +78,15 @@ export class DocumentConverter {
    * @param content The HTML content as a string or Buffer.
    * @returns A Prosemirror Node representing the document.
    */
-  public static htmlToProsemirror(content: Buffer | string): Node {
+  public static async htmlToProsemirror(
+    content: Buffer | string
+  ): Promise<Node> {
     if (typeof content !== "string") {
       content = content.toString("utf8");
     }
 
+    // Loaded lazily to keep jsdom off the startup path — only HTML imports need it.
+    const { JSDOM } = await import("jsdom");
     const dom = new JSDOM(content);
     const document = dom.window.document;
 
@@ -147,6 +147,30 @@ export class DocumentConverter {
         const calculatedHeight = Math.round(parseInt(dataHeight) / ratio);
         img.setAttribute("height", String(calculatedHeight));
       }
+
+      // Extract dimensions from data URI images that lack width/height
+      // (e.g. images embedded by mammoth during docx import).
+      // Only decode a small prefix of the base64 data — headers for all
+      // supported formats live within the first 64 KB of the file.
+      if (!img.getAttribute("width") && !img.getAttribute("height")) {
+        const src = img.getAttribute("src") || "";
+        if (src.startsWith("data:") && src.includes(";base64,")) {
+          const base64Start = src.indexOf(";base64,") + 8;
+          // 4 base64 chars → 3 bytes; decode at most ~64 KB of image data.
+          const maxBase64Chars = Math.ceil(65536 / 3) * 4;
+          const base64Prefix = src.slice(
+            base64Start,
+            base64Start + maxBase64Chars
+          );
+          const dimensions = this.getImageDimensionsFromBuffer(
+            Buffer.from(base64Prefix, "base64")
+          );
+          if (dimensions) {
+            img.setAttribute("width", String(dimensions.width));
+            img.setAttribute("height", String(dimensions.height));
+          }
+        }
+      }
     });
   }
 
@@ -201,24 +225,30 @@ export class DocumentConverter {
     fileName: string,
     mimeType: string
   ): Promise<string> {
+    let markdown: string;
+
     switch (mimeType) {
       case "text/plain":
       case "text/markdown":
-        return this.bufferToString(content);
+        markdown = this.bufferToString(content);
+        break;
       case "text/csv":
         return this.csvToMarkdown(content);
-      default:
-        break;
+      default: {
+        const extension = fileName.split(".").pop();
+        switch (extension) {
+          case "md":
+          case "markdown":
+            markdown = this.bufferToString(content);
+            break;
+          default:
+            throw FileImportError(`File type ${mimeType} not supported`);
+        }
+      }
     }
 
-    const extension = fileName.split(".").pop();
-    switch (extension) {
-      case "md":
-      case "markdown":
-        return this.bufferToString(content);
-      default:
-        throw FileImportError(`File type ${mimeType} not supported`);
-    }
+    // Process frontmatter and convert it to a YAML codeblock
+    return this.processFrontmatter(markdown);
   }
 
   /**
@@ -229,6 +259,8 @@ export class DocumentConverter {
    */
   private static async docxToHtml(content: Buffer | string): Promise<string> {
     if (content instanceof Buffer) {
+      // Loaded lazily to keep mammoth off the startup path — only docx imports need it.
+      const mammoth = (await import("mammoth")).default;
       const { value } = await traceFunction({ spanName: "convertToHtml" })(
         mammoth.convertToHtml
       )({
@@ -259,7 +291,9 @@ export class DocumentConverter {
     }
 
     // Confluence "Word" documents are actually just multi-part email messages, so we can use
-    // mailparser to parse the content.
+    // mailparser to parse the content. Loaded lazily to keep mailparser off the startup path —
+    // only Confluence Word imports need it.
+    const { simpleParser } = await import("mailparser");
     const parsed = await simpleParser(content);
     if (!parsed.html) {
       throw FileImportError("Unsupported Word file (No content found)");
@@ -269,9 +303,9 @@ export class DocumentConverter {
 
     // Replace the content-location with a data URI for each attachment.
     for (const attachment of parsed.attachments) {
-      const contentLocation = String(
-        attachment.headers.get("content-location") ?? ""
-      );
+      const contentLocation =
+        (attachment.headers.get("content-location") as string | undefined) ??
+        "";
 
       const id = contentLocation.split("/").pop();
       if (!id) {
@@ -293,7 +327,12 @@ export class DocumentConverter {
    * @param content The CSV file content.
    * @returns A markdown table representation.
    */
-  private static csvToMarkdown(content: Buffer | string): Promise<string> {
+  private static async csvToMarkdown(
+    content: Buffer | string
+  ): Promise<string> {
+    // Loaded lazily to keep @fast-csv off the startup path — only CSV imports need it.
+    const { parse } = await import("@fast-csv/parse");
+
     return new Promise((resolve, reject) => {
       const text = this.bufferToString(content).trim();
       const textLines = text.split("\n");
@@ -403,5 +442,132 @@ export class DocumentConverter {
    */
   private static bufferToString(content: Buffer | string): string {
     return typeof content === "string" ? content : content.toString("utf8");
+  }
+
+  /**
+   * Parse and convert frontmatter to a YAML codeblock.
+   *
+   * @param content The markdown content that may contain frontmatter.
+   * @returns The markdown content with frontmatter converted to a YAML codeblock.
+   */
+  private static processFrontmatter(content: string): string {
+    // Frontmatter must start at the beginning of the document
+    const frontmatterRegex = /^---\n([\s\S]*?)\n---(?:\n|$)/;
+    const match = content.match(frontmatterRegex);
+
+    if (!match) {
+      return content;
+    }
+
+    const frontmatterContent = match[1];
+    const remainingContent = content.slice(match[0].length);
+
+    // Validate that the frontmatter is valid YAML
+    try {
+      yaml.load(frontmatterContent);
+    } catch {
+      // If it's not valid YAML, return content unchanged
+      return content;
+    }
+
+    // Convert frontmatter to a YAML codeblock
+    const codeBlockDelimiter = "```";
+    const yamlCodeblock = `${codeBlockDelimiter}yaml\n${frontmatterContent}\n${codeBlockDelimiter}\n\n`;
+
+    return yamlCodeblock + remainingContent;
+  }
+
+  /**
+   * Parse image dimensions from a binary buffer. Supports PNG, JPEG, and GIF.
+   *
+   * @param buffer The image data.
+   * @returns The width and height if parseable, otherwise undefined.
+   */
+  private static getImageDimensionsFromBuffer(
+    buffer: Buffer
+  ): { width: number; height: number } | undefined {
+    try {
+      // PNG: signature + IHDR chunk
+      if (
+        buffer.length >= 24 &&
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47
+      ) {
+        return {
+          width: buffer.readUInt32BE(16),
+          height: buffer.readUInt32BE(20),
+        };
+      }
+
+      // GIF: signature + logical screen descriptor
+      if (
+        buffer.length >= 10 &&
+        buffer[0] === 0x47 &&
+        buffer[1] === 0x49 &&
+        buffer[2] === 0x46
+      ) {
+        return {
+          width: buffer.readUInt16LE(6),
+          height: buffer.readUInt16LE(8),
+        };
+      }
+
+      // JPEG: scan for SOF marker (cap at 64 KB to bound work)
+      if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+        const scanLimit = Math.min(buffer.length, 65536);
+        let offset = 2;
+        while (offset + 1 < scanLimit) {
+          if (buffer[offset] !== 0xff) {
+            offset++;
+            continue;
+          }
+          const marker = buffer[offset + 1];
+          offset += 2;
+
+          // Standalone markers without a payload
+          if (
+            marker === 0x00 ||
+            marker === 0x01 ||
+            (marker >= 0xd0 && marker <= 0xd9)
+          ) {
+            continue;
+          }
+
+          if (offset + 2 > scanLimit) {
+            break;
+          }
+          const segmentLength = buffer.readUInt16BE(offset);
+
+          // SOF markers contain the frame dimensions — check before
+          // the advance guard since this returns immediately.
+          if (
+            (marker >= 0xc0 && marker <= 0xc3) ||
+            (marker >= 0xc5 && marker <= 0xc7) ||
+            (marker >= 0xc9 && marker <= 0xcb) ||
+            (marker >= 0xcd && marker <= 0xcf)
+          ) {
+            if (offset + 7 <= buffer.length) {
+              return {
+                height: buffer.readUInt16BE(offset + 3),
+                width: buffer.readUInt16BE(offset + 5),
+              };
+            }
+            break;
+          }
+
+          // Length includes itself and must be >= 2; bail on malformed data.
+          if (segmentLength < 2 || offset + segmentLength > buffer.length) {
+            break;
+          }
+
+          offset += segmentLength;
+        }
+      }
+    } catch {
+      // Return undefined if parsing fails
+    }
+    return undefined;
   }
 }

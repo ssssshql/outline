@@ -1,5 +1,4 @@
-import uniq from "lodash/uniq";
-import uniqBy from "lodash/uniqBy";
+import { uniq, uniqBy } from "es-toolkit/compat";
 import { Op } from "sequelize";
 import {
   NotificationEventType,
@@ -181,33 +180,32 @@ export default class NotificationHelper {
         },
       });
     } else {
-      const subscriptions = await Subscription.findAll({
-        where: {
-          userId: {
-            [Op.ne]: actorId,
+      const userFilter = { userId: { [Op.ne]: actorId } };
+      const userInclude = [{ association: "user" as const, required: true }];
+
+      const [collectionSubs, documentSubs] = await Promise.all([
+        document.collectionId
+          ? Subscription.findAll({
+              where: {
+                ...userFilter,
+                event: SubscriptionType.Document,
+                collectionId: document.collectionId,
+              },
+              include: userInclude,
+            })
+          : [],
+        Subscription.findAll({
+          where: {
+            ...userFilter,
+            event: SubscriptionType.Document,
+            documentId: document.id,
           },
-          event: SubscriptionType.Document,
-          ...(document.collectionId
-            ? {
-                [Op.or]: [
-                  { collectionId: document.collectionId },
-                  { documentId: document.id },
-                ],
-              }
-            : {
-                documentId: document.id,
-              }),
-        },
-        include: [
-          {
-            association: "user",
-            required: true,
-          },
-        ],
-      });
+          include: userInclude,
+        }),
+      ]);
 
       recipients = uniqBy(
-        subscriptions.map((s) => s.user),
+        [...collectionSubs, ...documentSubs].map((s) => s.user),
         (user) => user.id
       );
     }

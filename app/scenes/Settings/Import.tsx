@@ -1,4 +1,4 @@
-import orderBy from "lodash/orderBy";
+import { orderBy } from "es-toolkit/compat";
 import { observer } from "mobx-react";
 import { NewDocumentIcon } from "outline-icons";
 import * as React from "react";
@@ -96,7 +96,7 @@ function useImportsConfig() {
     items.push({
       title: "Confluence",
       subtitle: t("Import pages from a Confluence instance"),
-      icon: <img src={cdnPath("/images/confluence.png")} width={28} />,
+      icon: <img src={cdnPath("/images/confluence.png")} alt="" width={28} />,
       action: (
         <Button type="submit" disabled neutral>
           {t("Enterprise")}

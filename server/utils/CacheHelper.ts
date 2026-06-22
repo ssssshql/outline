@@ -1,3 +1,4 @@
+import { toError } from "@shared/utils/error";
 import { Day } from "@shared/utils/time";
 import Logger from "@server/logging/Logger";
 import Redis from "@server/storage/redis";
@@ -54,7 +55,7 @@ export class CacheHelper {
       try {
         lock = await MutexLock.acquire(lockKey, lockTimeout);
       } catch (err) {
-        Logger.error(`Could not acquire lock for ${key}`, err);
+        Logger.error(`Could not acquire lock for ${key}`, toError(err));
       }
       cache = await this.getData<T>(key);
       if (cache) {
@@ -67,7 +68,6 @@ export class CacheHelper {
         // Check if result is a CacheResult with dynamic expiry
         const isCacheResult =
           typeof result === "object" &&
-          result !== null &&
           "data" in result &&
           Object.keys(result).every((k) => k === "data" || k === "expiry");
 
@@ -101,7 +101,10 @@ export class CacheHelper {
       }
     } catch (err) {
       // just log it, response can still be obtained using the fetch call
-      Logger.error(`Could not fetch cached response against ${key}`, err);
+      Logger.error(
+        `Could not fetch cached response against ${key}`,
+        toError(err)
+      );
     }
     return;
   }
@@ -123,7 +126,23 @@ export class CacheHelper {
       );
     } catch (err) {
       // just log it, can skip caching and directly return response
-      Logger.error(`Could not cache response against ${key}`, err);
+      Logger.error(`Could not cache response against ${key}`, toError(err));
+    }
+  }
+
+  /**
+   * Removes a single cached entry by key.
+   *
+   * @param key Cache key to remove.
+   */
+  public static async removeData(key: string) {
+    try {
+      await Redis.defaultClient.del(key);
+    } catch (err) {
+      Logger.error(
+        `Could not remove cached entry against ${key}`,
+        toError(err)
+      );
     }
   }
 
@@ -140,32 +159,5 @@ export class CacheHelper {
         await Redis.defaultClient.del(key);
       })
     );
-  }
-
-  // keys
-
-  /**
-   * Gets key against which unfurl response for the given url is stored
-   *
-   * @param teamId The team ID to generate a key for
-   * @param url The url to generate a key for
-   */
-  public static getUnfurlKey(teamId: string, url = "") {
-    return `unfurl:${teamId}:${url}`;
-  }
-
-  public static getCollectionDocumentsKey(collectionId: string) {
-    return `cd:${collectionId}`;
-  }
-
-  /**
-   * Gets key for caching embed check results. This is a global cache key
-   * (not team-specific) since embed headers are the same for all users.
-   *
-   * @param url The URL to generate a cache key for.
-   * @returns the cache key string.
-   */
-  public static getEmbedCheckKey(url: string) {
-    return `embed:${url}`;
   }
 }

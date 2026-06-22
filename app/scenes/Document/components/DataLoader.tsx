@@ -1,8 +1,8 @@
 import { observer } from "mobx-react";
 import * as React from "react";
 import type { RouteComponentProps, StaticContext } from "react-router";
-import { useLocation } from "react-router";
-import { TeamPreference } from "@shared/types";
+import { Redirect, useLocation } from "react-router";
+import { toError } from "@shared/utils/error";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import { RevisionHelper } from "@shared/utils/RevisionHelper";
 import type Document from "~/models/Document";
@@ -16,6 +16,7 @@ import { useDocumentContext } from "~/components/DocumentContext";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
+import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
 import type { Properties } from "~/types";
 import Logger from "~/utils/Logger";
@@ -26,7 +27,12 @@ import {
   PaymentRequiredError,
 } from "~/utils/errors";
 import history from "~/utils/history";
-import { matchDocumentEdit, settingsPath } from "~/utils/routeHelpers";
+import {
+  matchDocumentEdit,
+  settingsPath,
+  updateDocumentPath,
+} from "~/utils/routeHelpers";
+import useDocumentSidebar from "../hooks/useDocumentSidebar";
 import Loading from "./Loading";
 import MarkAsViewed from "./MarkAsViewed";
 
@@ -87,7 +93,10 @@ function DataLoader({ match, children }: Props) {
   const isEditing = isEditRoute || !user?.separateEditMode;
   const can = usePolicy(document);
   const location = useLocation<LocationState>();
+  const query = useQuery();
   const missingPolicy = !can || Object.keys(can).length === 0;
+
+  useDocumentSidebar();
 
   React.useEffect(() => {
     async function fetchDocument() {
@@ -96,26 +105,44 @@ function DataLoader({ match, children }: Props) {
           force: missingPolicy,
         });
       } catch (err) {
-        setError(err);
+        setError(toError(err));
       }
     }
     void fetchDocument();
   }, [ui, documents, missingPolicy, documentSlug]);
 
-  React.useEffect(() => {
-    async function fetchRevision() {
-      if (revisionId) {
-        try {
-          await revisions[revisionId === "latest" ? "fetchLatest" : "fetch"](
-            revisionId
-          );
-        } catch (err) {
-          setError(err);
+  const fetchRevisionById = React.useCallback(
+    async (id: string, onError: (err: Error) => void) => {
+      try {
+        if (id === "latest") {
+          if (document?.id) {
+            await revisions.fetchLatest(document.id);
+          }
+        } else {
+          await revisions.fetch(id);
         }
+      } catch (err) {
+        onError(err as Error);
       }
+    },
+    [revisions, document?.id]
+  );
+
+  React.useEffect(() => {
+    if (revisionId) {
+      void fetchRevisionById(revisionId, setError);
     }
-    void fetchRevision();
-  }, [revisions, revisionId]);
+  }, [fetchRevisionById, revisionId]);
+
+  const compareTo = query.get("compareTo");
+
+  React.useEffect(() => {
+    if (compareTo) {
+      void fetchRevisionById(compareTo, (err) =>
+        Logger.error("Failed to fetch compareTo revision", err)
+      );
+    }
+  }, [fetchRevisionById, compareTo]);
 
   React.useEffect(() => {
     async function fetchViews() {
@@ -125,7 +152,7 @@ function DataLoader({ match, children }: Props) {
             documentId: document.id,
           });
         } catch (err) {
-          Logger.error("Failed to fetch views", err);
+          Logger.error("Failed to fetch views", toError(err));
         }
       }
     }
@@ -162,7 +189,7 @@ function DataLoader({ match, children }: Props) {
 
       // If we're attempting to update an archived, deleted, or otherwise
       // uneditable document then forward to the canonical read url.
-      if (!can.update && isEditRoute && !document.template) {
+      if (!missingPolicy && !can.update && isEditRoute) {
         history.push(document.url);
         return;
       }
@@ -170,7 +197,7 @@ function DataLoader({ match, children }: Props) {
       // Prevents unauthorized request to load share information for the document
       // when viewing a public share link
       if (can.read && !document.isDeleted && !revisionId) {
-        if (team.getPreference(TeamPreference.Commenting)) {
+        if (team.commentingEnabled) {
           void comments.fetchAll({
             documentId: document.id,
             limit: 100,
@@ -195,7 +222,15 @@ function DataLoader({ match, children }: Props) {
     shares,
     ui,
     revisionId,
+    missingPolicy,
   ]);
+
+  // Auto-enter presentation mode when ?present=true query param is set
+  React.useEffect(() => {
+    if (document && query.has("present") && !ui.presentationData) {
+      ui.setPresentingDocument(document);
+    }
+  }, [document, query, ui]);
 
   if (error) {
     return error instanceof OfflineError ? (
@@ -203,7 +238,7 @@ function DataLoader({ match, children }: Props) {
     ) : error instanceof PaymentRequiredError ? (
       <Error402 />
     ) : error instanceof AuthorizationError ? (
-      <Error403 />
+      <Error403 documentId={documentSlug} />
     ) : error instanceof NotFoundError ? (
       <Error404 />
     ) : (
@@ -220,6 +255,21 @@ function DataLoader({ match, children }: Props) {
       <>
         <Loading location={location} />
       </>
+    );
+  }
+
+  // Redirect to the canonical URL if the document slug has changed, e.g.
+  // after a rename, so the browser address bar stays in sync.
+  const canonicalUrl = updateDocumentPath(match.url, document);
+  if (location.pathname !== canonicalUrl) {
+    return (
+      <Redirect
+        to={{
+          pathname: canonicalUrl,
+          state: location.state,
+          hash: location.hash,
+        }}
+      />
     );
   }
 

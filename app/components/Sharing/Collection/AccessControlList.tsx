@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import styled, { useTheme } from "styled-components";
+import { errToString } from "@shared/utils/error";
 import Squircle from "@shared/components/Squircle";
 import { s } from "@shared/styles";
 import { CollectionPermission } from "@shared/types";
@@ -16,7 +17,6 @@ import Scrollable from "~/components/Scrollable";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useMaxHeight from "~/hooks/useMaxHeight";
 import usePolicy from "~/hooks/usePolicy";
-import useRequest from "~/hooks/useRequest";
 import useStores from "~/hooks/useStores";
 import type { Permission } from "~/types";
 import { EmptySelectValue } from "~/types";
@@ -38,10 +38,12 @@ type Props = {
   invitedInSession: string[];
   /** Whether the popover is visible. */
   visible: boolean;
+  /** Whether the share data is currently loading. */
+  loading: boolean;
 };
 
 export const AccessControlList = observer(
-  ({ collection, share, invitedInSession, visible }: Props) => {
+  ({ collection, share, invitedInSession, visible, loading }: Props) => {
     const { memberships, groupMemberships } = useStores();
     const team = useCurrentTeam();
     const can = usePolicy(collection);
@@ -49,35 +51,13 @@ export const AccessControlList = observer(
     const theme = useTheme();
     const collectionId = collection.id;
 
-    const { request: fetchMemberships, loading: membershipLoading } =
-      useRequest(
-        React.useCallback(
-          () => memberships.fetchAll({ id: collectionId }),
-          [memberships, collectionId]
-        )
-      );
-
-    const { request: fetchGroupMemberships, loading: groupMembershipLoading } =
-      useRequest(
-        React.useCallback(
-          () => groupMemberships.fetchAll({ collectionId }),
-          [groupMemberships, collectionId]
-        )
-      );
-
     const groupMembershipsInCollection =
       groupMemberships.inCollection(collectionId);
     const membershipsInCollection = memberships.inCollection(collectionId);
     const hasMemberships =
       groupMembershipsInCollection.length > 0 ||
       membershipsInCollection.length > 0;
-    const showLoading =
-      !hasMemberships && (membershipLoading || groupMembershipLoading);
-
-    React.useEffect(() => {
-      void fetchMemberships();
-      void fetchGroupMemberships();
-    }, [fetchMemberships, fetchGroupMemberships]);
+    const showLoading = !hasMemberships && loading;
 
     const containerRef = React.useRef<HTMLDivElement | null>(null);
     const publicAccessRef = React.useRef<HTMLDivElement | null>(null);
@@ -146,7 +126,7 @@ export const AccessControlList = observer(
                     }}
                     disabled={!can.update}
                     value={collection?.permission}
-                    hideLabel
+                    labelHidden
                     nude
                     shrink
                   />
@@ -207,7 +187,7 @@ export const AccessControlList = observer(
                                   });
                                 }
                               } catch (err) {
-                                toast.error(err.message);
+                                toast.error(errToString(err));
                                 return false;
                               }
                               return true;
@@ -261,7 +241,7 @@ export const AccessControlList = observer(
                                   });
                                 }
                               } catch (err) {
-                                toast.error(err.message);
+                                toast.error(errToString(err));
                                 return false;
                               }
                               return true;

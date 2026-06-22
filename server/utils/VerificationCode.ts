@@ -21,9 +21,19 @@ export class VerificationCode {
   private static readonly TTL = Minute.ms * 10;
 
   /**
+   * Maximum number of verification attempts before the code is deleted
+   */
+  private static readonly MAX_ATTEMPTS = 10;
+
+  /**
    * Prefix for Redis keys
    */
   private static readonly KEY_PREFIX = "email_verification_code:";
+
+  /**
+   * Prefix for Redis attempt counter keys
+   */
+  private static readonly ATTEMPTS_PREFIX = "email_verification_attempts:";
 
   /**
    * Generate a random 6-digit code
@@ -38,12 +48,17 @@ export class VerificationCode {
   /**
    * Store a verification code in Redis with a 10-minute TTL
    *
+   * @param teamId The team the code is being issued for
    * @param email The email address associated with the code
    * @param code The 6-digit verification code
    * @returns Promise resolving to true if successful
    */
-  public static async store(email: string, code: string): Promise<boolean> {
-    const key = this.getKey(email);
+  public static async store(
+    teamId: string,
+    email: string,
+    code: string
+  ): Promise<boolean> {
+    const key = this.getKey(teamId, email);
     await this.redis.set(key, code, "PX", this.TTL);
     return true;
   }
@@ -51,45 +66,85 @@ export class VerificationCode {
   /**
    * Retrieve a verification code from Redis
    *
+   * @param teamId The team the code was issued for
    * @param email The email address associated with the code
-   * @returns Promise resolving to the code or null if not found
+   * @returns Promise resolving to the code or undefined if not found
    */
-  public static async retrieve(email: string): Promise<string | undefined> {
-    const key = this.getKey(email);
+  public static async retrieve(
+    teamId: string,
+    email: string
+  ): Promise<string | undefined> {
+    const key = this.getKey(teamId, email);
     return (await this.redis.get(key)) ?? undefined;
   }
 
   /**
-   * Verify if a given code matches the stored code for an email
+   * Verify if a given code matches the stored code for an email within a team.
    *
+   * @param teamId The team the code was issued for
    * @param email The email address associated with the code
    * @param code The code to verify
    * @returns Promise resolving to true if the code matches, false otherwise
    */
-  public static async verify(email: string, code: string): Promise<boolean> {
-    const storedCode = await this.retrieve(email);
+  public static async verify(
+    teamId: string,
+    email: string,
+    code: string
+  ): Promise<boolean> {
+    const storedCode = await this.retrieve(teamId, email);
+
+    if (!storedCode) {
+      return false;
+    }
+
+    const attemptsKey = this.getAttemptsKey(teamId, email);
+    const attempts = await this.redis.incr(attemptsKey);
+
+    if (attempts === 1) {
+      await this.redis.pexpire(attemptsKey, this.TTL);
+    }
+
+    if (attempts > this.MAX_ATTEMPTS) {
+      await this.delete(teamId, email);
+      return false;
+    }
+
     return safeEqual(storedCode, code);
   }
 
   /**
    * Delete a verification code from Redis
    *
+   * @param teamId The team the code was issued for
    * @param email The email address associated with the code
    * @returns Promise resolving to true if successful
    */
-  public static async delete(email: string): Promise<boolean> {
-    const key = this.getKey(email);
-    await this.redis.del(key);
+  public static async delete(teamId: string, email: string): Promise<boolean> {
+    const key = this.getKey(teamId, email);
+    const attemptsKey = this.getAttemptsKey(teamId, email);
+    await this.redis.del(key, attemptsKey);
     return true;
   }
 
   /**
-   * Get the Redis key for an email address
+   * Get the Redis key for a code scoped to a team and email address.
    *
+   * @param teamId The team the code was issued for
    * @param email The email address
    * @returns The Redis key
    */
-  private static getKey(email: string): string {
-    return `${this.KEY_PREFIX}${email.toLowerCase()}`;
+  private static getKey(teamId: string, email: string): string {
+    return `${this.KEY_PREFIX}${teamId}:${email.trim().toLowerCase()}`;
+  }
+
+  /**
+   * Get the Redis key for tracking verification attempts.
+   *
+   * @param teamId The team the code was issued for
+   * @param email The email address.
+   * @returns the Redis key for attempts.
+   */
+  private static getAttemptsKey(teamId: string, email: string): string {
+    return `${this.ATTEMPTS_PREFIX}${teamId}:${email.trim().toLowerCase()}`;
   }
 }

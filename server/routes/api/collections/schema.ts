@@ -1,4 +1,4 @@
-import isUndefined from "lodash/isUndefined";
+import { isUndefined } from "es-toolkit/compat";
 import { z } from "zod";
 import {
   CollectionPermission,
@@ -15,36 +15,50 @@ const BaseIdSchema = z.object({
   id: zodIdType(),
 });
 
+/** The landing page can be set from description (markdown) or data (rich content), but not both. */
+const refineBodyContent = <T extends { description?: unknown; data?: unknown }>(
+  body: T
+) => isUndefined(body.description) || isUndefined(body.data);
+
+const bodyContentError = {
+  error: "Only one of description or data may be provided",
+};
+
 export const CollectionsCreateSchema = BaseSchema.extend({
-  body: z.object({
-    name: z.string(),
-    color: z
-      .string()
-      .regex(ValidateColor.regex, { message: ValidateColor.message })
-      .nullish(),
-    description: z.string().nullish(),
-    data: ProsemirrorSchema({ allowEmpty: true }).nullish(),
-    permission: z
-      .nativeEnum(CollectionPermission)
-      .nullish()
-      .transform((val) => (isUndefined(val) ? null : val)),
-    sharing: z.boolean().default(true),
-    icon: zodIconType().optional(),
-    sort: z
-      .object({
-        field: z.union([z.literal("title"), z.literal("index")]),
-        direction: z.union([z.literal("asc"), z.literal("desc")]),
-      })
-      .default(Collection.DEFAULT_SORT),
-    index: z
-      .string()
-      .regex(ValidateIndex.regex, { message: ValidateIndex.message })
-      .max(ValidateIndex.maxLength, {
-        message: `Must be ${ValidateIndex.maxLength} or fewer characters long`,
-      })
-      .optional(),
-    commenting: z.boolean().nullish(),
-  }),
+  body: z
+    .object({
+      name: z.string(),
+      color: z
+        .string()
+        .regex(ValidateColor.regex, { message: ValidateColor.message })
+        .nullish(),
+      description: z.string().nullish(),
+      data: ProsemirrorSchema({ allowEmpty: true }).nullish(),
+      permission: z
+        .enum(CollectionPermission)
+        .nullish()
+        .transform((val) => (isUndefined(val) ? null : val)),
+      sharing: z.boolean().prefault(true),
+      icon: zodIconType().optional(),
+      sort: z
+        .object({
+          field: z.union([z.literal("title"), z.literal("index")]),
+          direction: z.union([z.literal("asc"), z.literal("desc")]),
+        })
+        .prefault(Collection.DEFAULT_SORT),
+      index: z
+        .string()
+        .regex(ValidateIndex.regex, { message: ValidateIndex.message })
+        .max(ValidateIndex.maxLength, {
+          message: `Must be ${ValidateIndex.maxLength} or fewer characters long`,
+        })
+        .optional(),
+      commenting: z.boolean().nullish(),
+      templateManagement: z
+        .enum([CollectionPermission.Admin, CollectionPermission.ReadWrite])
+        .prefault(CollectionPermission.Admin),
+    })
+    .refine(refineBodyContent, bodyContentError),
 });
 
 export type CollectionsCreateReq = z.infer<typeof CollectionsCreateSchema>;
@@ -69,13 +83,19 @@ export type CollectionsDocumentsReq = z.infer<
 export const CollectionsImportSchema = BaseSchema.extend({
   body: z.object({
     permission: z
-      .nativeEnum(CollectionPermission)
+      .enum(CollectionPermission)
       .nullish()
       .transform((val) => (isUndefined(val) ? null : val)),
-    attachmentId: z.string().uuid(),
+    attachmentId: z.uuid(),
+    /**
+     * The format of the upload. Both `json` and `outline-markdown` are
+     * routed through the API-import pipeline (see `imports.create`); the
+     * `format` field is retained for backwards compatibility with API
+     * clients calling this endpoint directly.
+     */
     format: z
-      .nativeEnum(FileOperationFormat)
-      .default(FileOperationFormat.MarkdownZip),
+      .enum([FileOperationFormat.JSON, FileOperationFormat.MarkdownZip])
+      .prefault(FileOperationFormat.JSON),
   }),
 });
 
@@ -83,10 +103,10 @@ export type CollectionsImportReq = z.infer<typeof CollectionsImportSchema>;
 
 export const CollectionsAddGroupSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
-    groupId: z.string().uuid(),
+    groupId: z.uuid(),
     permission: z
-      .nativeEnum(CollectionPermission)
-      .default(CollectionPermission.ReadWrite),
+      .enum(CollectionPermission)
+      .prefault(CollectionPermission.ReadWrite),
   }),
 });
 
@@ -94,7 +114,7 @@ export type CollectionsAddGroupsReq = z.infer<typeof CollectionsAddGroupSchema>;
 
 export const CollectionsRemoveGroupSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
-    groupId: z.string().uuid(),
+    groupId: z.uuid(),
   }),
 });
 
@@ -104,8 +124,8 @@ export type CollectionsRemoveGroupReq = z.infer<
 
 export const CollectionsAddUserSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
-    userId: z.string().uuid(),
-    permission: z.nativeEnum(CollectionPermission).optional(),
+    userId: z.uuid(),
+    permission: z.enum(CollectionPermission).optional(),
   }),
 });
 
@@ -113,7 +133,7 @@ export type CollectionsAddUserReq = z.infer<typeof CollectionsAddUserSchema>;
 
 export const CollectionsRemoveUserSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
-    userId: z.string().uuid(),
+    userId: z.uuid(),
   }),
 });
 
@@ -124,7 +144,7 @@ export type CollectionsRemoveUserReq = z.infer<
 export const CollectionsMembershipsSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
     query: z.string().optional(),
-    permission: z.nativeEnum(CollectionPermission).optional(),
+    permission: z.enum(CollectionPermission).optional(),
   }),
 });
 
@@ -135,9 +155,9 @@ export type CollectionsMembershipsReq = z.infer<
 export const CollectionsExportSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
     format: z
-      .nativeEnum(FileOperationFormat)
-      .default(FileOperationFormat.MarkdownZip),
-    includeAttachments: z.boolean().default(true),
+      .enum(FileOperationFormat)
+      .prefault(FileOperationFormat.MarkdownZip),
+    includeAttachments: z.boolean().prefault(true),
   }),
 });
 
@@ -146,10 +166,10 @@ export type CollectionsExportReq = z.infer<typeof CollectionsExportSchema>;
 export const CollectionsExportAllSchema = BaseSchema.extend({
   body: z.object({
     format: z
-      .nativeEnum(FileOperationFormat)
-      .default(FileOperationFormat.MarkdownZip),
-    includeAttachments: z.boolean().default(true),
-    includePrivate: z.boolean().default(true),
+      .enum(FileOperationFormat)
+      .prefault(FileOperationFormat.MarkdownZip),
+    includeAttachments: z.boolean().prefault(true),
+    includePrivate: z.boolean().prefault(true),
   }),
 });
 
@@ -163,7 +183,7 @@ export const CollectionsUpdateSchema = BaseSchema.extend({
     description: z.string().nullish(),
     data: ProsemirrorSchema({ allowEmpty: true }).nullish(),
     icon: zodIconType().nullish(),
-    permission: z.nativeEnum(CollectionPermission).nullish(),
+    permission: z.enum(CollectionPermission).nullish(),
     color: z
       .string()
       .regex(ValidateColor.regex, { message: ValidateColor.message })
@@ -176,19 +196,22 @@ export const CollectionsUpdateSchema = BaseSchema.extend({
       .optional(),
     sharing: z.boolean().optional(),
     commenting: z.boolean().nullish(),
-  }),
+    templateManagement: z
+      .enum([CollectionPermission.Admin, CollectionPermission.ReadWrite])
+      .optional(),
+  }).refine(refineBodyContent, bodyContentError),
 });
 
 export type CollectionsUpdateReq = z.infer<typeof CollectionsUpdateSchema>;
 
 export const CollectionsListSchema = BaseSchema.extend({
   body: z.object({
-    includeListOnly: z.boolean().default(false),
+    includeListOnly: z.boolean().prefault(false),
 
     query: z.string().optional(),
 
     /** Collection statuses to include in results */
-    statusFilter: z.nativeEnum(CollectionStatusFilter).array().optional(),
+    statusFilter: z.enum(CollectionStatusFilter).array().optional(),
   }),
 });
 

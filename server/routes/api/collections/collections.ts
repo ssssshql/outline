@@ -1,16 +1,19 @@
 import Router from "koa-router";
+import { randomUUID } from "node:crypto";
+import { truncate } from "es-toolkit/compat";
 import type { WhereOptions } from "sequelize";
 import { Sequelize, Op } from "sequelize";
 import {
   CollectionPermission,
   CollectionStatusFilter,
-  FileOperationState,
-  FileOperationType,
+  FileOperationFormat,
+  ImportState,
+  IntegrationService,
   UserRole,
 } from "@shared/types";
+import { ImportValidation } from "@shared/validations";
 import collectionExporter from "@server/commands/collectionExporter";
 import teamUpdater from "@server/commands/teamUpdater";
-import { parser } from "@server/editor";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { transaction } from "@server/middlewares/transaction";
@@ -23,10 +26,9 @@ import {
   User,
   Group,
   Attachment,
-  FileOperation,
   Document,
+  Import,
 } from "@server/models";
-import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { authorize } from "@server/policies";
 import {
   presentCollection,
@@ -38,7 +40,6 @@ import {
   presentFileOperation,
 } from "@server/presenters";
 import type { APIContext } from "@server/types";
-import { CacheHelper } from "@server/utils/CacheHelper";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { collectionIndexing } from "@server/utils/indexing";
 import pagination from "../middlewares/pagination";
@@ -49,6 +50,7 @@ const router = new Router();
 
 router.post(
   "collections.create",
+  rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
   auth(),
   validate(T.CollectionsCreateSchema),
   transaction(),
@@ -65,6 +67,7 @@ router.post(
       sort,
       index,
       commenting,
+      templateManagement,
     } = ctx.input.body;
 
     const { user } = ctx.state.auth;
@@ -83,13 +86,8 @@ router.post(
       sort,
       index,
       commenting,
+      templateManagement,
     });
-
-    if (data) {
-      collection.description = await DocumentHelper.toMarkdown(collection, {
-        includeTitle: false,
-      });
-    }
 
     await collection.saveWithCtx(ctx);
 
@@ -142,18 +140,7 @@ router.post(
 
     authorize(user, "readDocument", collection);
 
-    const documentStructure = await CacheHelper.getDataOrSet(
-      CacheHelper.getCollectionDocumentsKey(collection.id),
-      async () =>
-        (
-          await Collection.findByPk(collection.id, {
-            attributes: ["documentStructure"],
-            includeDocumentStructure: true,
-            rejectOnEmpty: true,
-          })
-        ).documentStructure,
-      60
-    );
+    const documentStructure = await collection.getCachedDocumentStructure();
 
     ctx.body = {
       data: documentStructure || [],
@@ -178,17 +165,27 @@ router.post(
     });
     authorize(user, "read", attachment);
 
-    await FileOperation.createWithCtx(ctx, {
-      type: FileOperationType.Import,
-      state: FileOperationState.Creating,
-      format,
-      size: attachment.size,
-      key: attachment.key,
-      userId: user.id,
+    const service =
+      format === FileOperationFormat.MarkdownZip
+        ? IntegrationService.Markdown
+        : IntegrationService.JSON;
+
+    await Import.createWithCtx(ctx, {
+      name: truncate(attachment.name, {
+        length: ImportValidation.maxNameLength,
+      }),
+      service,
+      state: ImportState.Created,
+      input: [
+        {
+          externalId: randomUUID(),
+          permission: permission ?? undefined,
+        },
+      ],
+      scratch: { storageKey: attachment.key },
+      integrationId: null,
+      createdById: user.id,
       teamId: user.teamId,
-      options: {
-        permission,
-      },
     });
 
     ctx.body = {
@@ -588,6 +585,7 @@ router.post(
       sort,
       sharing,
       commenting,
+      templateManagement,
     } = ctx.input.body;
 
     const { user } = ctx.state.auth;
@@ -636,16 +634,10 @@ router.post(
 
     if (description !== undefined) {
       collection.description = description;
-      collection.content = description
-        ? parser.parse(description)?.toJSON()
-        : null;
     }
 
     if (data !== undefined) {
       collection.content = data;
-      collection.description = await DocumentHelper.toMarkdown(collection, {
-        includeTitle: false,
-      });
     }
 
     if (icon !== undefined) {
@@ -672,6 +664,10 @@ router.post(
 
     if (commenting !== undefined) {
       collection.commenting = commenting;
+    }
+
+    if (templateManagement !== undefined) {
+      collection.templateManagement = templateManagement;
     }
 
     await collection.saveWithCtx(ctx);
@@ -857,31 +853,7 @@ router.post(
 
     authorize(user, "archive", collection);
 
-    collection.archivedAt = new Date();
-    collection.archivedById = user.id;
-    collection.archivedBy = user;
-
-    await collection.saveWithCtx(ctx, undefined, {
-      name: "archive",
-    });
-
-    // Archive all documents within the collection
-    await Document.update(
-      {
-        lastModifiedById: user.id,
-        archivedAt: collection.archivedAt,
-      },
-      {
-        where: {
-          teamId: collection.teamId,
-          collectionId: collection.id,
-          archivedAt: {
-            [Op.is]: null,
-          },
-        },
-        transaction,
-      }
-    );
+    await collection.archiveWithCtx(ctx);
 
     ctx.body = {
       data: await presentCollection(ctx, collection),

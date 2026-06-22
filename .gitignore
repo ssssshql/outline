@@ -14,10 +14,12 @@ data/*
 *.pem
 *.key
 *.cert
+.history
 
 # Yarn Berry
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
+.yarn/releases
 !.yarn/sdks

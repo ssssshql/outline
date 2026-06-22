@@ -1,5 +1,6 @@
 import copy from "copy-to-clipboard";
-import type { Token } from "markdown-it";
+import { t } from "i18next";
+import type Token from "markdown-it/lib/token.mjs";
 import { textblockTypeInputRule } from "prosemirror-inputrules";
 import type {
   NodeSpec,
@@ -8,13 +9,17 @@ import type {
   Node as ProsemirrorNode,
 } from "prosemirror-model";
 import type { Command, EditorState } from "prosemirror-state";
-import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
-import { Decoration, DecorationSet } from "prosemirror-view";
+import {
+  NodeSelection,
+  Plugin,
+  PluginKey,
+  TextSelection,
+} from "prosemirror-state";
+import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
 import { toast } from "sonner";
 import type { Primitive } from "utility-types";
-import type { Dictionary } from "~/hooks/useDictionary";
 import type { UserPreferences } from "../../types";
-import { isMac } from "../../utils/browser";
+import { isBrowser, isMac } from "../../utils/browser";
 import backspaceToParagraph from "../commands/backspaceToParagraph";
 import {
   newlineInCode,
@@ -37,22 +42,135 @@ import {
   setRecentlyUsedCodeLanguage,
 } from "../lib/code";
 import { isCode, isMermaid } from "../lib/isCode";
+import { isRemoteTransaction } from "../lib/multiplayer";
+import { findBlockNodes } from "../queries/findChildren";
 import type { MarkdownSerializerState } from "../lib/markdown/serializer";
+import { escapeRawTableCell } from "../lib/markdown/tableCell";
 import { findNextNewline, findPreviousNewline } from "../queries/findNewlines";
-import { findParentNode } from "../queries/findParentNode";
+import {
+  findParentNode,
+  findParentNodeClosestToPos,
+} from "../queries/findParentNode";
+import { EditorStyleHelper } from "../styles/EditorStyleHelper";
 import { getMarkRange } from "../queries/getMarkRange";
 import { isInCode } from "../queries/isInCode";
 import Node from "./Node";
 
 const DEFAULT_LANGUAGE = "javascript";
 
-export default class CodeFence extends Node {
-  constructor(options: {
-    dictionary: Dictionary;
-    userPreferences?: UserPreferences | null;
-  }) {
-    super(options);
+/** Fraction of the viewport height above which a code block is collapsible. */
+const COLLAPSE_HEIGHT_RATIO = 0.5;
+
+/** Approximate rendered line height of a code block, in pixels. */
+const CODE_LINE_HEIGHT = 20;
+
+interface CollapseState {
+  /** Positions of code blocks taller than COLLAPSE_HEIGHT_RATIO of the viewport. */
+  tallBlocks: Set<number>;
+  /** Positions of code blocks currently collapsed by the user or auto-collapse. */
+  collapsedBlocks: Set<number>;
+  /** Node decorations that add the `collapsed` CSS class. */
+  decorations: DecorationSet;
+}
+
+/**
+ * Find all code block positions whose estimated height exceeds
+ * COLLAPSE_HEIGHT_RATIO of the viewport height.
+ *
+ * @param doc - the document to scan.
+ * @returns set of positions of tall code blocks.
+ */
+function findTallBlocks(doc: ProsemirrorNode): Set<number> {
+  const tall = new Set<number>();
+  if (!isBrowser) {
+    return tall;
   }
+  const maxLines =
+    (window.innerHeight * COLLAPSE_HEIGHT_RATIO) / CODE_LINE_HEIGHT;
+  for (const block of findBlockNodes(doc, true)) {
+    if (isCode(block.node)) {
+      const lines = (block.node.textContent.match(/\n/g)?.length ?? 0) + 1;
+      if (lines > maxLines) {
+        tall.add(block.pos);
+      }
+    }
+  }
+  return tall;
+}
+
+/**
+ * Build a CollapseState with node decorations for the collapsed class and
+ * widget decorations for toggle buttons on all tall blocks.
+ */
+function buildCollapseState(
+  doc: ProsemirrorNode,
+  tallBlocks: Set<number>,
+  collapsedBlocks: Set<number>,
+  expandLabel: string,
+  collapseLabel: string
+): CollapseState {
+  const decorations: Decoration[] = [];
+  for (const pos of tallBlocks) {
+    const node = doc.nodeAt(pos);
+    if (!node || !isCode(node)) {
+      continue;
+    }
+
+    const isCollapsed = collapsedBlocks.has(pos);
+
+    if (isCollapsed) {
+      const totalLines = (node.textContent.match(/\n/g)?.length ?? 0) + 1;
+      const gutterWidth = String(totalLines).length;
+      const lineNumberText = Array.from({ length: totalLines }, (_, i) =>
+        String(i + 1).padStart(gutterWidth, " ")
+      ).join("\n");
+
+      decorations.push(
+        Decoration.node(
+          pos,
+          pos + node.nodeSize,
+          { class: "collapsed", "data-line-numbers": lineNumberText },
+          { collapsed: true }
+        )
+      );
+    }
+
+    const label = isCollapsed ? expandLabel : collapseLabel;
+    decorations.push(
+      Decoration.widget(
+        pos + node.nodeSize,
+        () => {
+          const button = document.createElement("button");
+          button.className = EditorStyleHelper.codeBlockToggle;
+          button.contentEditable = "false";
+          button.type = "button";
+          button.textContent = label;
+          return button;
+        },
+        { side: 1, key: `toggle-${pos}-${isCollapsed}` }
+      )
+    );
+  }
+  return {
+    tallBlocks,
+    collapsedBlocks,
+    decorations: DecorationSet.create(doc, decorations),
+  };
+}
+
+/**
+ * Options for the CodeFence node.
+ */
+type CodeFenceOptions = {
+  /** Display preferences for the logged in user, if any. */
+  userPreferences?: UserPreferences | null;
+};
+
+export default class CodeFence extends Node<CodeFenceOptions> {
+  /** Plugin key for the collapse state, shared with the command. */
+  private static readonly collapseKey = new PluginKey<CollapseState>(
+    "collapse-code-block"
+  );
 
   get showLineNumbers(): boolean {
     return this.options.userPreferences?.codeBlockLineNumbers ?? true;
@@ -69,6 +187,10 @@ export default class CodeFence extends Node {
           default: DEFAULT_LANGUAGE,
           validate: "string",
         },
+        wrap: {
+          default: false,
+          validate: "boolean",
+        },
       },
       content: "text*",
       marks: "comment",
@@ -78,12 +200,13 @@ export default class CodeFence extends Node {
       draggable: false,
       parseDOM: [
         {
-          tag: ".code-block",
+          tag: `.${EditorStyleHelper.codeBlock}`,
           preserveWhitespace: "full",
           contentElement: (node: HTMLElement) =>
             node.querySelector("code") || node,
           getAttrs: (dom: HTMLDivElement) => ({
             language: dom.dataset.language,
+            wrap: dom.classList.contains("with-line-wrap"),
           }),
         },
         {
@@ -99,16 +222,27 @@ export default class CodeFence extends Node {
           },
         },
       ],
-      toDOM: (node) => [
-        "div",
-        {
-          class: `code-block ${
-            this.showLineNumbers ? "with-line-numbers" : ""
-          }`,
-          "data-language": node.attrs.language,
-        },
-        ["pre", ["code", { spellCheck: "false" }, 0]],
-      ],
+      toDOM: (node) => {
+        const classes = [
+          EditorStyleHelper.codeBlock,
+          node.attrs.wrap
+            ? "with-line-wrap"
+            : this.showLineNumbers
+              ? "with-line-numbers"
+              : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        return [
+          "div",
+          {
+            class: classes,
+            "data-language": node.attrs.language,
+          },
+          ["pre", ["code", { spellCheck: "false" }, 0]],
+        ];
+      },
     };
   }
 
@@ -123,8 +257,68 @@ export default class CodeFence extends Node {
           ...attrs,
         });
       },
-      edit_mermaid: (): Command => (state, dispatch) => {
+      expandCodeBlockAt:
+        (pos: number): Command =>
+        (state, dispatch) => {
+          const $pos = state.doc.resolve(pos);
+          const codeBlock = findParentNodeClosestToPos($pos, isCode);
+          if (!codeBlock) {
+            return false;
+          }
+
+          const collapseState = CodeFence.collapseKey.getState(state);
+          if (!collapseState?.collapsedBlocks.has(codeBlock.pos)) {
+            return false;
+          }
+
+          if (dispatch) {
+            dispatch(
+              state.tr
+                .setMeta(CodeFence.collapseKey, { expand: codeBlock.pos })
+                .setMeta("addToHistory", false)
+            );
+          }
+          return true;
+        },
+      toggleCodeBlockCollapse: (): Command => (state, dispatch) => {
         const codeBlock = findParentNode(isCode)(state.selection);
+        if (!codeBlock) {
+          return false;
+        }
+
+        if (dispatch) {
+          dispatch(
+            state.tr
+              .setMeta(CodeFence.collapseKey, {
+                toggle: codeBlock.pos,
+              })
+              .setMeta("addToHistory", false)
+          );
+        }
+        return true;
+      },
+      toggleCodeBlockWrap: (): Command => (state, dispatch) => {
+        const codeBlock = findParentNode(isCode)(state.selection);
+        if (!codeBlock) {
+          return false;
+        }
+
+        if (dispatch) {
+          dispatch(
+            state.tr.setNodeMarkup(codeBlock.pos, undefined, {
+              ...codeBlock.node.attrs,
+              wrap: !codeBlock.node.attrs.wrap,
+            })
+          );
+        }
+        return true;
+      },
+      edit_mermaid: (): Command => (state, dispatch) => {
+        const codeBlock =
+          state.selection instanceof NodeSelection &&
+          isCode(state.selection.node)
+            ? { pos: state.selection.from, node: state.selection.node }
+            : findParentNode(isCode)(state.selection);
         if (!codeBlock || !isMermaid(codeBlock.node)) {
           return false;
         }
@@ -157,7 +351,7 @@ export default class CodeFence extends Node {
 
         if (codeBlock) {
           copy(codeBlock.node.textContent);
-          toast.message(this.options.dictionary.codeCopied);
+          toast.message(t("Copied to clipboard"));
           return true;
         }
 
@@ -178,7 +372,7 @@ export default class CodeFence extends Node {
           dispatch?.(tr);
 
           copy(tr.doc.textBetween(state.selection.from, state.selection.to));
-          toast.message(this.options.dictionary.codeCopied);
+          toast.message(t("Copied to clipboard"));
           return true;
         }
 
@@ -215,6 +409,172 @@ export default class CodeFence extends Node {
     }
 
     return output;
+  }
+
+  /** Plugins for collapsible code block behavior. */
+  private collapsePlugins(): Plugin[] {
+    const collapseKey = CodeFence.collapseKey;
+    const build = (
+      doc: ProsemirrorNode,
+      tall: Set<number>,
+      collapsed: Set<number>
+    ) => buildCollapseState(doc, tall, collapsed, t("Expand"), t("Collapse"));
+
+    return [
+      // Main collapse plugin: manages state and decorations
+      new Plugin<CollapseState>({
+        key: collapseKey,
+        state: {
+          init: (_config, state) => {
+            const tallBlocks = findTallBlocks(state.doc);
+            return build(state.doc, tallBlocks, new Set(tallBlocks));
+          },
+          apply: (tr, prev, _oldState, newState) => {
+            const meta = tr.getMeta(collapseKey);
+
+            // Toggle collapsed state
+            if (meta?.toggle !== undefined) {
+              const next = new Set(prev.collapsedBlocks);
+              if (next.has(meta.toggle)) {
+                next.delete(meta.toggle);
+              } else {
+                next.add(meta.toggle);
+              }
+              return build(newState.doc, prev.tallBlocks, next);
+            }
+
+            // Expand a specific block (auto-expand on focus)
+            if (meta?.expand !== undefined) {
+              if (prev.collapsedBlocks.has(meta.expand)) {
+                const next = new Set(prev.collapsedBlocks);
+                next.delete(meta.expand);
+                return build(newState.doc, prev.tallBlocks, next);
+              }
+              return prev;
+            }
+
+            // Recompute tall blocks on doc changes. Newly tall blocks are only
+            // auto-collapsed when content arrives via load/remote sync — never
+            // while the user is typing, which would collapse the block under
+            // the cursor.
+            if (tr.docChanged) {
+              const tallBlocks = findTallBlocks(newState.doc);
+              const collapsedBlocks = new Set<number>();
+              const isRemote = isRemoteTransaction(tr);
+
+              const inverse = tr.mapping.invert();
+              for (const pos of tallBlocks) {
+                const oldPos = inverse.map(pos);
+                if (isRemote && !prev.tallBlocks.has(oldPos)) {
+                  // Newly tall blocks start collapsed on load
+                  collapsedBlocks.add(pos);
+                } else if (prev.collapsedBlocks.has(oldPos)) {
+                  // Preserve previous collapsed state
+                  collapsedBlocks.add(pos);
+                }
+              }
+
+              return build(newState.doc, tallBlocks, collapsedBlocks);
+            }
+
+            return prev;
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state)?.decorations ?? DecorationSet.empty;
+          },
+        },
+      }),
+      // Click handler for toggle button + auto-expand on focus
+      new Plugin({
+        key: new PluginKey("collapse-toggle"),
+        appendTransaction: (transactions, oldState, newState) => {
+          const hasCollapseMeta = transactions.some((tr) =>
+            tr.getMeta(collapseKey)
+          );
+          const hasSelectionSet = transactions.some((tr) => tr.selectionSet);
+          if (hasCollapseMeta || !hasSelectionSet) {
+            return null;
+          }
+
+          const codeBlock = findParentNode(isCode)(newState.selection);
+          const collapseState = collapseKey.getState(newState);
+          if (
+            !codeBlock ||
+            !collapseState?.collapsedBlocks.has(codeBlock.pos)
+          ) {
+            return null;
+          }
+
+          // Only auto-expand when the selection moved INTO the block. If the
+          // selection was already inside this block (e.g. after the user just
+          // clicked Collapse while the cursor was inside), don't re-expand.
+          const oldCodeBlock = findParentNode(isCode)(oldState.selection);
+          if (oldCodeBlock?.pos === codeBlock.pos) {
+            return null;
+          }
+
+          return newState.tr
+            .setMeta(collapseKey, { expand: codeBlock.pos })
+            .setMeta("addToHistory", false);
+        },
+        props: {
+          handleDOMEvents: {
+            mousedown: (view: EditorView, event: MouseEvent) => {
+              const target = event.target as HTMLElement;
+              const button = target.closest(
+                `.${EditorStyleHelper.codeBlockToggle}`
+              );
+              if (!button) {
+                return false;
+              }
+
+              const codeBlockEl =
+                button.previousElementSibling?.classList.contains(
+                  EditorStyleHelper.codeBlock
+                )
+                  ? button.previousElementSibling
+                  : null;
+              if (!codeBlockEl) {
+                return false;
+              }
+
+              const codeEl = codeBlockEl.querySelector("code");
+              if (!codeEl) {
+                return false;
+              }
+
+              const pos = view.posAtDOM(codeEl, 0);
+              const $pos = view.state.doc.resolve(pos);
+              const parent = findParentNodeClosestToPos($pos, isCode);
+              if (!parent) {
+                return false;
+              }
+
+              const collapseState = collapseKey.getState(view.state);
+              const isCollapsing = !collapseState?.collapsedBlocks.has(
+                parent.pos
+              );
+
+              view.dispatch(
+                view.state.tr
+                  .setMeta(collapseKey, { toggle: parent.pos })
+                  .setMeta("addToHistory", false)
+              );
+
+              if (isCollapsing) {
+                codeBlockEl.scrollIntoView({ block: "nearest" });
+              }
+
+              event.preventDefault();
+              event.stopPropagation();
+              return true;
+            },
+          },
+        },
+      }),
+    ];
   }
 
   get plugins() {
@@ -329,6 +689,8 @@ export default class CodeFence extends Node {
           },
         },
       }),
+      // Collapse plugins - only on code_fence (not CodeBlock subclass)
+      ...(this.name === "code_fence" ? this.collapsePlugins() : []),
     ].filter(Boolean) as Plugin[];
   }
 
@@ -341,8 +703,14 @@ export default class CodeFence extends Node {
   }
 
   toMarkdown(state: MarkdownSerializerState, node: ProsemirrorNode) {
+    // Fence content bypasses esc(), so when inside a table cell escape it here
+    // so it cannot break out of the column.
+    const content = state.inTable
+      ? escapeRawTableCell(node.textContent)
+      : node.textContent;
+
     state.write("```" + (node.attrs.language || "") + "\n");
-    state.text(node.textContent, false);
+    state.text(content, false);
     state.ensureNewLine();
     state.write("```");
     state.closeBlock(node);

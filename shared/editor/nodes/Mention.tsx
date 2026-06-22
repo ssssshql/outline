@@ -1,5 +1,6 @@
-import isMatch from "lodash/isMatch";
-import type { Token } from "markdown-it";
+import { isMatch } from "es-toolkit/compat";
+import { sanitizeUrl } from "../../utils/urls";
+import type Token from "markdown-it/lib/token.mjs";
 import type {
   NodeSpec,
   Node as ProsemirrorNode,
@@ -18,7 +19,9 @@ import {
   MentionDocument,
   MentionGroup,
   MentionIssue,
+  MentionProject,
   MentionPullRequest,
+  MentionDate,
   MentionURL,
   MentionUser,
 } from "../components/Mentions";
@@ -93,25 +96,35 @@ export default class Mention extends Node {
         },
       ],
       toDOM: (node) => [
-        node.attrs.type === MentionType.User ? "span" : "a",
+        node.attrs.type === MentionType.User ||
+        node.attrs.type === MentionType.Date
+          ? "span"
+          : "a",
         {
-          class: `${node.type.name} use-hover-preview`,
+          // Date mentions are self-contained and have nothing to unfurl, so
+          // they opt out of the hover preview behaviour.
+          class:
+            node.attrs.type === MentionType.Date
+              ? node.type.name
+              : `${node.type.name} use-hover-preview`,
           id: node.attrs.id,
           href:
-            node.attrs.type === MentionType.User
+            node.attrs.type === MentionType.User ||
+            node.attrs.type === MentionType.Date
               ? undefined
               : node.attrs.type === MentionType.Document
                 ? `${env.URL}/doc/${node.attrs.modelId}`
                 : node.attrs.type === MentionType.Collection
                   ? `${env.URL}/collection/${node.attrs.modelId}`
-                  : node.attrs.href,
+                  : sanitizeUrl(node.attrs.href),
           "data-type": node.attrs.type,
           "data-id": node.attrs.modelId,
           "data-actorid": node.attrs.actorId,
           "data-url":
             node.attrs.type === MentionType.PullRequest ||
-            node.attrs.type === MentionType.Issue
-              ? node.attrs.href
+            node.attrs.type === MentionType.Issue ||
+            node.attrs.type === MentionType.Project
+              ? sanitizeUrl(node.attrs.href)
               : `mention://${node.attrs.id}/${node.attrs.type}/${node.attrs.modelId}`,
           "data-unfurl": JSON.stringify(node.attrs.unfurl),
         },
@@ -145,12 +158,23 @@ export default class Mention extends Node {
             onChangeUnfurl={this.handleChangeUnfurl(props)}
           />
         );
+      case MentionType.Project:
+        return (
+          <MentionProject
+            {...props}
+            onChangeUnfurl={this.handleChangeUnfurl(props)}
+          />
+        );
       case MentionType.URL:
         return (
           <MentionURL
             {...props}
             onChangeUnfurl={this.handleChangeUnfurl(props)}
           />
+        );
+      case MentionType.Date:
+        return (
+          <MentionDate {...props} onChangeDate={this.handleChangeDate(props)} />
         );
       default:
         return null;
@@ -199,6 +223,7 @@ export default class Mention extends Node {
       MentionType.Document,
       MentionType.Issue,
       MentionType.PullRequest,
+      MentionType.Project,
     ];
 
     return {
@@ -215,7 +240,8 @@ export default class Mention extends Node {
 
           if (
             mentionType === MentionType.Issue ||
-            mentionType === MentionType.PullRequest
+            mentionType === MentionType.PullRequest ||
+            mentionType === MentionType.Project
           ) {
             link = selection.node.attrs.href;
           } else {
@@ -329,6 +355,25 @@ export default class Mention extends Node {
     };
   }
 
+  handleChangeDate =
+    ({ node, getPos }: { node: ProsemirrorNode; getPos: () => number }) =>
+    (modelId: string) => {
+      const { view } = this.editor;
+      const { tr } = view.state;
+      const pos = getPos();
+
+      if (node.attrs.modelId === modelId) {
+        return;
+      }
+
+      const transaction = tr.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        modelId,
+        label: modelId,
+      });
+      view.dispatch(transaction);
+    };
+
   handleChangeUnfurl =
     ({ node, getPos }: { node: ProsemirrorNode; getPos: () => number }) =>
     (unfurl: UnfurlResponse[keyof UnfurlResponse]) => {
@@ -340,7 +385,9 @@ export default class Mention extends Node {
         unfurl.type === UnfurlResourceType.PR ||
         unfurl.type === UnfurlResourceType.URL
           ? unfurl.title
-          : undefined;
+          : unfurl.type === UnfurlResourceType.Project
+            ? unfurl.name
+            : undefined;
 
       const overrides: Record<string, unknown> = label ? { label } : {};
       overrides.unfurl = unfurl;

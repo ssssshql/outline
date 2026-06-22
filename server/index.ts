@@ -1,5 +1,6 @@
 /* oxlint-disable @typescript-eslint/no-misused-promises */
 /* oxlint-disable import/order */
+import { toError } from "@shared/utils/error";
 import env from "./env";
 
 import "./logging/tracer"; // must come before importing any instrumented module
@@ -14,7 +15,7 @@ import Router from "koa-router";
 import type { AddressInfo } from "node:net";
 import stoppable from "stoppable";
 import throng from "throng";
-import escape from "lodash/escape";
+import { escape } from "es-toolkit/compat";
 import Logger from "./logging/Logger";
 import services from "./services";
 import { getArg } from "./utils/args";
@@ -27,6 +28,8 @@ import ShutdownHelper, { ShutdownOrder } from "./utils/ShutdownHelper";
 import { checkConnection, sequelize } from "./storage/database";
 import Redis from "@server/storage/redis";
 import Metrics from "@server/logging/Metrics";
+import { CacheHelper } from "./utils/CacheHelper";
+import { RedisPrefixHelper } from "./utils/RedisPrefixHelper";
 import { PluginManager } from "./utils/PluginManager";
 
 // The number of processes to run, defaults to the number of CPU's available
@@ -60,6 +63,11 @@ async function master() {
 async function start(_id: number, disconnect: () => void) {
   // Ensure plugins are loaded
   PluginManager.loadPlugins();
+
+  // Clear unfurl cache in development so code changes take effect immediately
+  if (env.isDevelopment) {
+    void CacheHelper.clearData(RedisPrefixHelper.getUnfurlKey(""));
+  }
 
   // Find if SSL certs are available
   const ssl = getSSLOptions();
@@ -123,7 +131,7 @@ async function start(_id: number, disconnect: () => void) {
       }
 
       this.body = `
-<html>
+<html lang="en">
 <head>
   <title>Redirecting…</title>
 </head>
@@ -139,7 +147,7 @@ async function start(_id: number, disconnect: () => void) {
     } else {
       // Default GET method using meta refresh
       this.body = `
-<html>
+<html lang="en">
 <head>
 <meta http-equiv="refresh" content="0;URL='${escape(url)}'" />
 </head>
@@ -152,7 +160,7 @@ async function start(_id: number, disconnect: () => void) {
     try {
       await sequelize.query("SELECT 1");
     } catch (err) {
-      Logger.error("Database connection failed", err);
+      Logger.error("Database connection failed", toError(err));
       ctx.status = 500;
       return;
     }
@@ -160,7 +168,7 @@ async function start(_id: number, disconnect: () => void) {
     try {
       await Redis.defaultClient.ping();
     } catch (err) {
-      Logger.error("Redis ping failed", err);
+      Logger.error("Redis ping failed", toError(err));
       ctx.status = 500;
       return;
     }
@@ -177,8 +185,8 @@ async function start(_id: number, disconnect: () => void) {
     }
 
     Logger.info("lifecycle", `Starting ${name} service`);
-    const init = services[name as keyof typeof services];
-    await init(app, server as https.Server, env.SERVICES);
+    const { default: init } = await services[name as keyof typeof services]();
+    await Promise.resolve(init(app, server as https.Server, env.SERVICES));
   }
 
   server.on("error", (err) => {
@@ -251,8 +259,11 @@ const isWebProcess =
   env.SERVICES.includes("api") ||
   env.SERVICES.includes("collaboration");
 
+const isWorkerProcess =
+  env.SERVICES.length === 1 && env.SERVICES.includes("worker");
+
 void throng({
   master,
   worker: start,
-  count: isWebProcess ? webProcessCount : undefined,
+  count: isWorkerProcess ? 1 : isWebProcess ? webProcessCount : undefined,
 });

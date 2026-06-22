@@ -338,6 +338,39 @@ export function isMergedCellSelection(state: EditorState): boolean {
   return false;
 }
 
+/**
+ * Check if the table contains any cells with rowspan > 1.
+ * Cells with rowspan span multiple rows and would break table sorting.
+ *
+ * @param state The editor state.
+ * @returns true if the table has any cells with rowspan > 1, false otherwise.
+ */
+export function tableHasRowspan(state: EditorState): boolean {
+  if (!isInTable(state)) {
+    return false;
+  }
+
+  const rect = selectedRect(state);
+  const seen = new Set<number>();
+
+  for (let i = 0; i < rect.map.map.length; i++) {
+    const pos = rect.map.map[i];
+
+    // Skip already checked cells
+    if (seen.has(pos)) {
+      continue;
+    }
+    seen.add(pos);
+
+    const cell = rect.table.nodeAt(pos);
+    if (cell && cell.attrs.rowspan > 1) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function getAllSelectedColumns(state: EditorState): number[] {
   const rect = selectedRect(state);
 
@@ -347,6 +380,93 @@ export function getAllSelectedColumns(state: EditorState): number[] {
   }
 
   return selectedColumns;
+}
+
+/**
+ * Get the indices of all currently selected rows.
+ *
+ * @param state The editor state
+ * @returns Array of selected row indices
+ */
+export function getAllSelectedRows(state: EditorState): number[] {
+  const rect = selectedRect(state);
+
+  const selectedRows: number[] = [];
+  for (let row = rect.top; row < rect.bottom; row++) {
+    selectedRows.push(row);
+  }
+
+  return selectedRows;
+}
+
+/**
+ * Get the positions of every unique cell across all selected columns, falling
+ * back to a single column when it is not part of the selection.
+ *
+ * Operating on the full selection ensures column operations affect all selected
+ * columns – including columns spanned by a merged (colspan) header cell, which a
+ * single-column lookup would miss.
+ *
+ * @param state The editor state
+ * @param fallbackIndex The column index to use when nothing is selected
+ * @returns Array of unique cell positions
+ */
+export function getCellsInSelectedColumns(
+  state: EditorState,
+  fallbackIndex: number
+): number[] {
+  const selectedColumns = getAllSelectedColumns(state);
+  const columns = selectedColumns.includes(fallbackIndex)
+    ? selectedColumns
+    : [fallbackIndex];
+
+  const seen = new Set<number>();
+  const cells: number[] = [];
+  columns.forEach((index) => {
+    getCellsInColumn(index)(state).forEach((pos) => {
+      if (!seen.has(pos)) {
+        seen.add(pos);
+        cells.push(pos);
+      }
+    });
+  });
+
+  return cells;
+}
+
+/**
+ * Get the positions of every unique cell across all selected rows, falling back
+ * to a single row when it is not part of the selection.
+ *
+ * Operating on the full selection ensures row operations affect all selected
+ * rows – including rows spanned by a merged (rowspan) cell, which a single-row
+ * lookup would miss.
+ *
+ * @param state The editor state
+ * @param fallbackIndex The row index to use when nothing is selected
+ * @returns Array of unique cell positions
+ */
+export function getCellsInSelectedRows(
+  state: EditorState,
+  fallbackIndex: number
+): number[] {
+  const selectedRows = getAllSelectedRows(state);
+  const rows = selectedRows.includes(fallbackIndex)
+    ? selectedRows
+    : [fallbackIndex];
+
+  const seen = new Set<number>();
+  const cells: number[] = [];
+  rows.forEach((index) => {
+    getCellsInRow(index)(state).forEach((pos) => {
+      if (!seen.has(pos)) {
+        seen.add(pos);
+        cells.push(pos);
+      }
+    });
+  });
+
+  return cells;
 }
 
 /**
@@ -457,6 +577,29 @@ export function getColorSetForSelectedCells(selection: Selection): Set<string> {
     }
   });
   return colors;
+}
+
+/**
+ * Get all unique background colors used in table cells across the entire document.
+ *
+ * @param state The editor state.
+ * @returns An array of unique hex color strings used for table cell backgrounds in the document.
+ */
+export function getDocumentTableBackgroundColors(state: EditorState): string[] {
+  const colors = new Set<string>();
+
+  state.doc.descendants((node) => {
+    if (node.type.name === "td" || node.type.name === "th") {
+      const backgroundMark = (node.attrs.marks ?? []).find(
+        (mark: NodeAttrMark) => mark.type === "background"
+      );
+      if (backgroundMark && backgroundMark.attrs.color) {
+        colors.add(backgroundMark.attrs.color);
+      }
+    }
+  });
+
+  return Array.from(colors);
 }
 
 /**

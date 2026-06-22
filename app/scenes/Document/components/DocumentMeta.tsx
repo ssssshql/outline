@@ -5,9 +5,9 @@ import { useRef, Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import styled from "styled-components";
-import { TeamPreference } from "@shared/types";
 import type Document from "~/models/Document";
 import type Revision from "~/models/Revision";
+import type Template from "~/models/Template";
 import { openDocumentInsights } from "~/actions/definitions/documents";
 import DocumentMeta, { Separator } from "~/components/DocumentMeta";
 import Fade from "~/components/Fade";
@@ -21,13 +21,13 @@ import NudeButton from "~/components/NudeButton";
 
 type Props = {
   /* The document to display meta data for */
-  document: Document;
+  document: Document | Template;
   revision?: Revision;
   to?: LocationDescriptor;
   rtl?: boolean;
 };
 
-function TitleDocumentMeta({ to, document, revision, ...rest }: Props) {
+function TitleDocumentMeta({ to, document, revision, rtl, ...rest }: Props) {
   const { views, comments, ui } = useStores();
   const { t } = useTranslation();
   const sidebarContext = useLocationSidebarContext();
@@ -41,19 +41,31 @@ function TitleDocumentMeta({ to, document, revision, ...rest }: Props) {
   const Wrapper = viewsLoadedOnMount.current ? Fragment : Fade;
 
   const commentsCount = comments.unresolvedCommentsInDocumentCount(document.id);
-  const commentingEnabled = !!team.getPreference(TeamPreference.Commenting);
+  const commentingEnabled = team.commentingEnabled;
 
   return (
-    <Meta document={document} revision={revision} to={to} replace {...rest}>
+    <Meta
+      document={document as Document}
+      revision={revision}
+      to={to}
+      replace
+      $rtl={rtl}
+      {...rest}
+    >
       {commentingEnabled && can.comment && (
         <>
           <Separator />
           <CommentLink
             to={{
-              pathname: documentPath(document),
+              pathname: documentPath(document as Document),
               state: { sidebarContext },
             }}
-            onClick={() => ui.toggleComments()}
+            onClick={() =>
+              ui.set({
+                rightSidebar:
+                  ui.rightSidebar === "comments" ? null : "comments",
+              })
+            }
           >
             <CommentIcon size={18} />
             {commentsCount
@@ -62,10 +74,7 @@ function TitleDocumentMeta({ to, document, revision, ...rest }: Props) {
           </CommentLink>
         </>
       )}
-      {totalViewers &&
-      can.listViews &&
-      !document.isDraft &&
-      !document.isTemplate ? (
+      {totalViewers && can.listViews && !(document as Document).isDraft ? (
         <Wrapper>
           <Separator />
           <InsightsButton action={openDocumentInsights}>
@@ -104,8 +113,8 @@ const InsightsButton = styled(NudeButton)`
   }
 `;
 
-export const Meta = styled(DocumentMeta)<{ rtl?: boolean }>`
-  justify-content: ${(props) => (props.rtl ? "flex-end" : "flex-start")};
+export const Meta = styled(DocumentMeta)<{ $rtl?: boolean }>`
+  justify-content: ${(props) => (props.$rtl ? "flex-end" : "flex-start")};
   margin: -12px 0 2em 0;
   font-size: 14px;
   position: relative;

@@ -1,11 +1,13 @@
 import Router from "koa-router";
 import { UserRole } from "@shared/types";
+import env from "@server/env";
 import auth from "@server/middlewares/authentication";
 import { transaction } from "@server/middlewares/transaction";
 import validate from "@server/middlewares/validate";
 import { AuthenticationProvider } from "@server/models";
 import AuthenticationHelper from "@server/models/helpers/AuthenticationHelper";
 import { authorize } from "@server/policies";
+import { PluginManager } from "@server/utils/PluginManager";
 import {
   presentAuthenticationProvider,
   presentPolicies,
@@ -40,7 +42,7 @@ router.post(
   transaction(),
   async (ctx: APIContext<T.AuthenticationProvidersUpdateReq>) => {
     const { transaction } = ctx.state;
-    const { id, isEnabled } = ctx.input.body;
+    const { id, isEnabled, settings } = ctx.input.body;
     const { user } = ctx.state.auth;
 
     const authenticationProvider = await AuthenticationProvider.findByPk(id, {
@@ -49,12 +51,24 @@ router.post(
     });
 
     authorize(user, "update", authenticationProvider);
-    const enabled = !!isEnabled;
 
-    if (enabled) {
-      await authenticationProvider.enable(ctx);
-    } else {
-      await authenticationProvider.disable(ctx);
+    if (isEnabled !== undefined) {
+      const enabled = !!isEnabled;
+
+      if (enabled) {
+        await authenticationProvider.enable(ctx);
+      } else {
+        await authenticationProvider.disable(ctx);
+      }
+    }
+
+    if (settings !== undefined) {
+      await authenticationProvider.updateWithCtx(ctx, {
+        settings: {
+          ...(authenticationProvider.settings ?? {}),
+          ...settings,
+        },
+      });
     }
 
     ctx.body = {
@@ -85,7 +99,13 @@ router.post(
       await authenticationProvider.disable(ctx);
     }
 
-    await authenticationProvider.destroy({ transaction });
+    // On self-hosted, providers are typically registered via env vars and
+    // would re-appear on the login screen if the row was destroyed, so we
+    // keep the row with enabled=false. On cloud, destroy the row so the
+    // admin can reconnect with a different workspace.
+    if (env.isCloudHosted) {
+      await authenticationProvider.destroy({ transaction });
+    }
 
     ctx.body = {
       success: true,
@@ -110,6 +130,9 @@ router.post(
         const row = teamAuthenticationProviders.find(
           (t) => t.name === p.value.id
         );
+        const groupSyncProvider = PluginManager.getGroupSyncProvider(
+          p.value.id
+        );
 
         return {
           id: p.value.id,
@@ -117,6 +140,8 @@ router.post(
           displayName: p.name,
           isEnabled: false,
           isConnected: false,
+          groupSyncSupported: !!groupSyncProvider,
+          groupSyncUsesClaim: groupSyncProvider?.useGroupClaim ?? false,
           ...(row ? presentAuthenticationProvider(row) : {}),
         };
       })

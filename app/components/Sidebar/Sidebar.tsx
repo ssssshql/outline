@@ -1,5 +1,7 @@
 import { observer } from "mobx-react";
 import * as React from "react";
+import { mergeRefs } from "react-merge-refs";
+import { useWebHaptics } from "web-haptics/react";
 import { useLocation } from "react-router-dom";
 import styled, { css, useTheme } from "styled-components";
 import breakpoint from "styled-components-breakpoint";
@@ -21,8 +23,7 @@ import ResizeBorder from "./components/ResizeBorder";
 import SidebarButton from "./components/SidebarButton";
 import ToggleButton from "./components/ToggleButton";
 import { useTranslation } from "react-i18next";
-import useKeyDown from "~/hooks/useKeyDown";
-import { isModKey } from "@shared/utils/keyboard";
+import { useDirection } from "@radix-ui/react-direction";
 
 const ANIMATION_MS = 250;
 
@@ -53,6 +54,8 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
   const collapsed = ui.sidebarIsClosed && canCollapse;
   const maxWidth = theme.sidebarMaxWidth;
   const minWidth = theme.sidebarMinWidth + 16; // padding
+  const { trigger } = useWebHaptics();
+  const direction = useDirection();
 
   const [offset, setOffset] = React.useState(0);
   const [isHovering, setHovering] = React.useState(false);
@@ -61,19 +64,16 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
   const [hasPointerMoved, setPointerMoved] = React.useState(false);
   const isSmallerThanMinimum = width < minWidth;
   const hoverTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
-
-  useKeyDown(".", (event) => {
-    if (isModKey(event)) {
-      ui.toggleCollapsedSidebar();
-    }
-  });
+  const internalRef = React.useRef<HTMLDivElement | null>(null);
+  const mergedRef = React.useMemo(() => mergeRefs([internalRef, ref]), [ref]);
 
   const handleDrag = React.useCallback(
     (event: MouseEvent) => {
       // suppresses text selection
       event.preventDefault();
-      // this is simple because the sidebar is always against the left edge
-      const newWidth = Math.min(event.pageX - offset, maxWidth);
+      const rawWidth =
+        direction === "rtl" ? offset - event.pageX : event.pageX - offset;
+      const newWidth = Math.min(rawWidth, maxWidth);
       const isSmallerThanCollapsePoint = newWidth < minWidth / 2;
 
       if (canCollapse) {
@@ -86,7 +86,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
         ui.set({ sidebarWidth: Math.max(newWidth, minWidth) });
       }
     },
-    [ui, theme, offset, minWidth, maxWidth]
+    [ui, theme, offset, minWidth, maxWidth, direction, canCollapse]
   );
 
   const handleStopDrag = React.useCallback(() => {
@@ -110,7 +110,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
     } else {
       ui.set({ sidebarWidth: width });
     }
-  }, [ui, isSmallerThanMinimum, minWidth, width]);
+  }, [ui, isSmallerThanMinimum, minWidth, width, canCollapse]);
 
   const handleBlur = React.useCallback(() => {
     setHovering(false);
@@ -123,11 +123,13 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
         return;
       }
 
-      setOffset(event.pageX - width);
+      setOffset(
+        direction === "rtl" ? event.pageX + width : event.pageX - width
+      );
       setResizing(true);
       setAnimating(false);
     },
-    [width]
+    [width, direction]
   );
 
   const handlePointerActivity = React.useCallback(() => {
@@ -151,16 +153,21 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
 
         // add a short delay when mouse exits the sidebar before closing
         hoverTimeoutRef.current = setTimeout(() => {
+          const withinSidebar =
+            direction === "rtl"
+              ? ev.pageX > window.innerWidth - width
+              : ev.pageX < width;
+
           setHovering(
             document.hasFocus() &&
-              ev.pageX < width &&
+              withinSidebar &&
               ev.pageY < window.innerHeight &&
               ev.pageY > 0
           );
         }, 500);
       }
     },
-    [width, hasPointerMoved]
+    [width, direction, hasPointerMoved]
   );
 
   React.useEffect(() => {
@@ -169,6 +176,31 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
       setPointerMoved(false);
     }
   }, [ui.sidebarIsClosed]);
+
+  // Reset stale hover state when the sidebar becomes visible after being
+  // hidden via display:none (e.g. returning from settings). Without this, a
+  // pointer-leave event never fires when navigating away while hovering, so
+  // isHovering stays true and the sidebar appears expanded until the cursor
+  // re-enters and leaves.
+  React.useEffect(() => {
+    const el = internalRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    let wasVisible = false;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const nowVisible = entry.isIntersecting;
+        if (nowVisible && !wasVisible) {
+          setHovering(false);
+          setPointerMoved(false);
+        }
+        wasVisible = nowVisible;
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   React.useEffect(() => {
     if (isAnimating) {
@@ -224,11 +256,16 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
     [width]
   );
 
+  const handleCloseSidebar = () => {
+    void trigger("light");
+    ui.toggleMobileSidebar();
+  };
+
   return (
     <TooltipProvider>
       <Container
         id="sidebar"
-        ref={ref}
+        ref={mergedRef}
         style={style}
         $hidden={hidden}
         $isHovering={isHovering}
@@ -256,7 +293,6 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
                   alt={t("Avatar of {{ name }}", { name: user.name })}
                   model={user}
                   size={24}
-                  style={{ marginLeft: 4 }}
                 />
               }
             >
@@ -265,6 +301,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
                   position="bottom"
                   image={<NotificationIcon />}
                   aria-label={t("Notifications")}
+                  style={{ paddingInline: 4 }}
                 />
               </NotificationsPopover>
             </SidebarButton>
@@ -275,7 +312,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, Props>(function Sidebar_(
           onDoubleClick={ui.sidebarIsClosed ? undefined : handleReset}
         />
       </Container>
-      {ui.mobileSidebarVisible && <Backdrop onClick={ui.toggleMobileSidebar} />}
+      {ui.mobileSidebarVisible && <Backdrop onClick={handleCloseSidebar} />}
     </TooltipProvider>
   );
 });
@@ -303,7 +340,7 @@ type ContainerProps = {
 };
 
 const hoverStyles = (props: ContainerProps) => `
-  transform: none;
+  transform: none !important;
   box-shadow: ${
     props.$collapsed
       ? "rgba(0, 0, 0, 0.2) 1px 0 4px"
@@ -321,21 +358,28 @@ const Container = styled(Flex)<ContainerProps>`
   position: fixed;
   top: 0;
   bottom: 0;
+  inset-inline-start: 0;
   width: 100%;
   background: ${s("sidebarBackground")};
   transition:
     box-shadow 150ms ease-in-out,
-    transform 150ms ease-out,
-    ${(props: ContainerProps) =>
-      props.$isAnimating ? `,width ${ANIMATION_MS}ms ease-out` : ""};
+    transform 250ms cubic-bezier(0.34, 1.15, 0.64, 1)
+      ${(props: ContainerProps) =>
+        props.$isAnimating ? `, width ${ANIMATION_MS}ms ease-out` : ""};
   transform: translateX(
     ${(props) => (props.$mobileSidebarVisible ? 0 : "-100%")}
   );
   z-index: ${depths.mobileSidebar};
   max-width: 80%;
   min-width: 280px;
-  padding-left: var(--sal);
+  padding-inline-start: var(--sal);
   ${fadeOnDesktopBackgrounded()}
+
+  [dir="rtl"] & {
+    transform: translateX(
+      ${(props) => (props.$mobileSidebarVisible ? 0 : "100%")}
+    );
+  }
 
   @media print {
     display: none;
@@ -363,10 +407,19 @@ const Container = styled(Flex)<ContainerProps>`
     z-index: ${depths.sidebar};
     margin: 0;
     min-width: 0;
+    transition:
+      box-shadow 150ms ease-in-out,
+      transform 150ms ease-out${(props: ContainerProps) =>
+        props.$isAnimating ? `, width ${ANIMATION_MS}ms ease-out` : ""};
     transform: translateX(${(props: ContainerProps) =>
       props.$collapsed
         ? `calc(-100% + ${Desktop.hasInsetTitlebar() ? 8 : 16}px)`
         : 0});
+
+    [dir="rtl"] & {
+      transform: translateX(${(props: ContainerProps) =>
+        props.$collapsed ? `calc(100% - 8px)` : 0});
+    }
 
     ${(props: ContainerProps) => props.$isHovering && css(hoverStyles)}
 

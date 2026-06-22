@@ -21,6 +21,11 @@ type CodeLanguage = {
  */
 export const codeLanguages: Record<string, CodeLanguage> = {
   none: { lang: "", label: "Plain text" },
+  abap: {
+    lang: "abap",
+    label: "ABAP",
+    loader: () => import("refractor/lang/abap").then((m) => m.default),
+  },
   bash: {
     lang: "bash",
     label: "Bash",
@@ -80,6 +85,11 @@ export const codeLanguages: Record<string, CodeLanguage> = {
     lang: "erlang",
     label: "Erlang",
     loader: () => import("refractor/lang/erlang").then((m) => m.default),
+  },
+  fortran: {
+    lang: "fortran",
+    label: "Fortran",
+    loader: () => import("refractor/lang/fortran").then((m) => m.default),
   },
   go: {
     lang: "go",
@@ -364,12 +374,23 @@ export const getRefractorLangForLanguage = (
 export const getLoaderForLanguage = (language: string) =>
   codeLanguages[language as keyof typeof codeLanguages]?.loader;
 
+// Mermaid diagrams have a separate insertion entry point, so they should never
+// be remembered as a recently or frequently used code language.
+const nonPersistableLanguages = ["mermaid", "mermaidjs"];
+
+const isPersistableCodeLanguage = (language: string) =>
+  !nonPersistableLanguages.includes(language);
+
 /**
  * Set the most recent code language used.
  *
  * @param language The language identifier.
  */
 export const setRecentlyUsedCodeLanguage = (language: string) => {
+  if (!isPersistableCodeLanguage(language)) {
+    return;
+  }
+
   const frequentLangs = (Storage.get(StorageKey) ?? {}) as Record<
     string,
     number
@@ -406,8 +427,12 @@ export const setRecentlyUsedCodeLanguage = (language: string) => {
  *
  * @returns The most recent code language used, or undefined if none is set.
  */
-export const getRecentlyUsedCodeLanguage = () =>
-  Storage.get(RecentlyUsedStorageKey) as keyof typeof codeLanguages | undefined;
+export const getRecentlyUsedCodeLanguage = () => {
+  const language = Storage.get(RecentlyUsedStorageKey) as
+    | keyof typeof codeLanguages
+    | undefined;
+  return language && isPersistableCodeLanguage(language) ? language : undefined;
+};
 
 /**
  * Get the most frequent code languages used.
@@ -415,17 +440,20 @@ export const getRecentlyUsedCodeLanguage = () =>
  * @returns An array of the most frequent code languages used.
  */
 export const getFrequentCodeLanguages = () => {
-  const recentLang = Storage.get(RecentlyUsedStorageKey);
-  const frequentLangEntries = Object.entries(Storage.get(StorageKey) ?? {}) as [
-    keyof typeof codeLanguages,
-    number,
-  ][];
+  const recentLang = getRecentlyUsedCodeLanguage();
+  const frequentLangEntries = (
+    Object.entries(Storage.get(StorageKey) ?? {}) as [
+      keyof typeof codeLanguages,
+      number,
+    ][]
+  ).filter(([lang]) => isPersistableCodeLanguage(lang));
 
   const frequentLangs = sortFrequencies(frequentLangEntries)
     .slice(0, frequentLanguagesToGet)
     .map(([lang]) => lang);
 
-  const isRecentLangPresent = frequentLangs.includes(recentLang);
+  const isRecentLangPresent =
+    !!recentLang && frequentLangs.includes(recentLang);
   if (recentLang && !isRecentLangPresent) {
     frequentLangs.pop();
     frequentLangs.push(recentLang);

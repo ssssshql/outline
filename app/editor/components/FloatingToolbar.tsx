@@ -7,12 +7,11 @@ import { isCode } from "@shared/editor/lib/isCode";
 import { findParentNode } from "@shared/editor/queries/findParentNode";
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import { depths, s } from "@shared/styles";
-import { getSafeAreaInsets } from "@shared/utils/browser";
 import { HEADER_HEIGHT } from "~/components/Header";
 import { Portal } from "~/components/Portal";
 import useEventListener from "~/hooks/useEventListener";
+import useKeyboardStickyOffset from "~/hooks/useKeyboardStickyOffset";
 import useMobile from "~/hooks/useMobile";
-import useWindowSize from "~/hooks/useWindowSize";
 import Logger from "~/utils/Logger";
 import { useEditor } from "./EditorContext";
 import { ColumnSelection } from "@shared/editor/selection/ColumnSelection";
@@ -68,7 +67,7 @@ function usePosition({
     fromPos = view.coordsAtPos(selection.from);
     toPos = view.coordsAtPos(selection.to, -1);
   } catch (err) {
-    Logger.warn("Unable to calculate selection position", err);
+    Logger.warn("Unable to calculate selection position", { err });
     return defaultPosition;
   }
 
@@ -90,12 +89,19 @@ function usePosition({
       } as DOMRect);
 
   // position at the top right of code blocks
-  const codeBlock = findParentNode(isCode)(view.state.selection);
+  const isCodeNodeSelection =
+    selection instanceof NodeSelection && isCode(selection.node);
+  const codeBlock = isCodeNodeSelection
+    ? { pos: selection.from, node: selection.node }
+    : findParentNode(isCode)(view.state.selection);
   const noticeBlock = findParentNode(
     (node) => node.type.name === "container_notice"
   )(view.state.selection);
 
-  if ((codeBlock || noticeBlock) && view.state.selection.empty) {
+  if (
+    (codeBlock || noticeBlock) &&
+    (view.state.selection.empty || isCodeNodeSelection)
+  ) {
     const position = codeBlock
       ? codeBlock.pos
       : noticeBlock
@@ -260,23 +266,20 @@ const FloatingToolbar = React.forwardRef(function FloatingToolbar_(
   });
 
   const isMobile = useMobile();
-  const { height } = useWindowSize();
+  const isMobileToolbarVisible = isMobile && !!props.active && position.visible;
+
+  // Keep the mobile toolbar glued to the top of the on-screen keyboard. The
+  // hook tracks the visual viewport directly — see its implementation for the
+  // iOS specifics.
+  useKeyboardStickyOffset(menuRef, isMobileToolbarVisible);
 
   if (isMobile) {
-    if (props.active && position.visible) {
-      const rect = document.body.getBoundingClientRect();
-      const safeAreaInsets = getSafeAreaInsets();
-
+    if (isMobileToolbarVisible) {
+      // Vertical position (above the keyboard) is owned entirely by
+      // useKeyboardStickyOffset, which writes the transform directly.
       return (
         <ReactPortal>
-          <MobileWrapper
-            ref={menuRef}
-            style={{
-              bottom: `calc(100% - ${
-                height - rect.y - safeAreaInsets.bottom
-              }px)`,
-            }}
-          >
+          <MobileWrapper ref={menuRef}>
             {props.children && (
               <MobileBackground>{props.children}</MobileBackground>
             )}
@@ -340,12 +343,14 @@ const arrow = (props: WrapperProps) =>
     : "";
 
 const MobileWrapper = styled.div`
-  position: absolute;
+  position: fixed;
+  bottom: 0;
   left: 0;
   right: 0;
   width: 100vw;
   box-sizing: border-box;
   z-index: ${depths.editorToolbar};
+  will-change: transform;
 
   @media print {
     display: none;
@@ -413,11 +418,24 @@ const Wrapper = styled.div<WrapperProps>`
     box-sizing: border-box;
   }
 
+  & button,
+  & a,
+  & input {
+    pointer-events: none;
+  }
+
   ${({ active }) =>
     active &&
     `
     transform: translateY(-6px) scale(1);
     opacity: 1;
+
+    & button,
+    & a,
+    & input {
+      pointer-events: auto;
+      transition: pointer-events 0s 300ms;
+    }
   `};
 
   @media print {

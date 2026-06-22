@@ -11,6 +11,7 @@ import {
   Scopes,
 } from "sequelize-typescript";
 import { GroupValidation } from "@shared/validations";
+import ExternalGroup from "./ExternalGroup";
 import GroupMembership from "./GroupMembership";
 import GroupUser from "./GroupUser";
 import Team from "./Team";
@@ -38,7 +39,7 @@ import NotContainsUrl from "./validators/NotContainsUrl";
   tableName: "groups",
   modelName: "group",
   validate: {
-    async isUniqueNameInTeam() {
+    async isUniqueNameInTeam(this: Group) {
       const foundItem = await Group.findOne({
         where: {
           teamId: this.teamId,
@@ -62,7 +63,11 @@ class Group extends ParanoidModel<
   InferAttributes<Group>,
   Partial<InferCreationAttributes<Group>>
 > {
-  @Length({ min: 0, max: 255, msg: "name must be 255 characters or less" })
+  @Length({
+    min: 0,
+    max: GroupValidation.maxNameLength,
+    msg: `name must be ${GroupValidation.maxNameLength} characters or less`,
+  })
   @NotContainsUrl
   @Column
   name: string;
@@ -92,6 +97,9 @@ class Group extends ParanoidModel<
   @HasMany(() => GroupUser, "groupId")
   groupUsers: GroupUser[];
 
+  @HasMany(() => ExternalGroup, "groupId")
+  externalGroups: ExternalGroup[];
+
   @HasMany(() => GroupMembership, "groupId")
   groupMemberships: GroupMembership[];
 
@@ -112,7 +120,20 @@ class Group extends ParanoidModel<
   @BelongsToMany(() => User, () => GroupUser)
   users: User[];
 
-  @CounterCache(() => GroupUser, { as: "members", foreignKey: "groupId" })
+  @CounterCache(() => GroupUser, {
+    as: "members",
+    foreignKey: "groupId",
+    include: [
+      {
+        association: "user",
+        required: true,
+        attributes: [],
+        where: {
+          suspendedAt: { [Op.is]: null },
+        },
+      },
+    ],
+  })
   memberCount: Promise<number>;
 }
 

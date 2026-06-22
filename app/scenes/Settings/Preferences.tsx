@@ -4,7 +4,11 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { languageOptions as availableLanguages } from "@shared/i18n";
-import { TeamPreference, UserPreference } from "@shared/types";
+import {
+  NotificationBadgeType,
+  TeamPreference,
+  UserPreference,
+} from "@shared/types";
 import { Theme } from "~/stores/UiStore";
 import Button from "~/components/Button";
 import Heading from "~/components/Heading";
@@ -18,6 +22,7 @@ import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import UserDelete from "../UserDelete";
+import { AutoLaunchSetting } from "./components/AutoLaunchSetting";
 import SettingRow from "./components/SettingRow";
 
 function Preferences() {
@@ -95,6 +100,39 @@ function Preferences() {
     [user, t]
   );
 
+  const notificationBadgeOptions: Option[] = React.useMemo(
+    () => [
+      {
+        type: "item",
+        label: t("Disabled"),
+        value: NotificationBadgeType.Disabled,
+      },
+      {
+        type: "item",
+        label: t("Unread count"),
+        value: NotificationBadgeType.Count,
+      },
+      {
+        type: "item",
+        label: t("Unread indicator"),
+        value: NotificationBadgeType.Indicator,
+      },
+    ],
+    [t]
+  );
+
+  const handleNotificationBadgeChange = React.useCallback(
+    async (value: string) => {
+      user.setPreference(
+        UserPreference.NotificationBadge,
+        value as NotificationBadgeType
+      );
+      await user.save();
+      toast.success(t("Preferences saved"));
+    },
+    [user, t]
+  );
+
   const handleLanguageChange = React.useCallback(
     async (language: string) => {
       await user.save({ language });
@@ -151,7 +189,7 @@ function Preferences() {
           value={user.language}
           onChange={handleLanguageChange}
           label={t("Language")}
-          hideLabel
+          labelHidden
         />
       </SettingRow>
       <SettingRow
@@ -164,7 +202,7 @@ function Preferences() {
           value={ui.theme}
           onChange={handleThemeChange}
           label={t("Appearance")}
-          hideLabel
+          labelHidden
         />
       </SettingRow>
       <SettingRow
@@ -230,7 +268,6 @@ function Preferences() {
         />
       </SettingRow>
       <SettingRow
-        border={false}
         name={UserPreference.EnableSmartText}
         label={t("Smart text replacements")}
         description={t(
@@ -242,6 +279,23 @@ function Preferences() {
           name={UserPreference.EnableSmartText}
           checked={!!user.getPreference(UserPreference.EnableSmartText)}
           onChange={handleEnableSmartTextChange}
+        />
+      </SettingRow>
+      <AutoLaunchSetting />
+      <SettingRow
+        border={false}
+        name={UserPreference.NotificationBadge}
+        label={t("Notification badge")}
+        description={t(
+          "Choose how unread notifications are indicated on the app icon."
+        )}
+      >
+        <InputSelect
+          options={notificationBadgeOptions}
+          value={user.getPreference(UserPreference.NotificationBadge)}
+          onChange={handleNotificationBadgeChange}
+          label={t("Notification badge")}
+          labelHidden
         />
       </SettingRow>
 

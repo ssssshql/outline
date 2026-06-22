@@ -1,7 +1,6 @@
 import { addDays, differenceInDays } from "date-fns";
 import i18n, { t } from "i18next";
-import capitalize from "lodash/capitalize";
-import floor from "lodash/floor";
+import { capitalize, floor } from "es-toolkit/compat";
 import { action, autorun, comparer, computed, observable, set } from "mobx";
 import type {
   JSONObject,
@@ -21,7 +20,6 @@ import type DocumentsStore from "~/stores/DocumentsStore";
 import User from "~/models/User";
 import type { Properties } from "~/types";
 import { client } from "~/utils/ApiClient";
-import { settingsPath } from "~/utils/routeHelpers";
 import Collection from "./Collection";
 import type Notification from "./Notification";
 import type View from "./View";
@@ -39,7 +37,7 @@ type SaveOptions = JSONObject & {
 export default class Document extends ArchivableModel implements Searchable {
   static modelName = "Document";
 
-  constructor(fields: Record<string, any>, store: DocumentsStore) {
+  constructor(fields: Record<string, unknown>, store: DocumentsStore) {
     super(fields, store);
 
     this.embedsDisabled = Storage.get(`embedsDisabled-${this.id}`) ?? false;
@@ -151,12 +149,6 @@ export default class Document extends ArchivableModel implements Searchable {
   color?: string | null;
 
   /**
-   * Whether this is a template.
-   */
-  @observable
-  template: boolean;
-
-  /**
    * Whether the document layout is displayed full page width.
    */
   @Field
@@ -190,7 +182,7 @@ export default class Document extends ArchivableModel implements Searchable {
   parentDocument?: Document;
 
   @observable
-  collaboratorIds: string[];
+  collaboratorIds: string[] = [];
 
   @Relation(() => User)
   createdBy: User | undefined;
@@ -280,8 +272,7 @@ export default class Document extends ArchivableModel implements Searchable {
 
   @computed
   get path(): string {
-    const prefix =
-      this.template && !this.isDeleted ? settingsPath("templates") : "/doc";
+    const prefix = "/doc";
 
     if (!this.title) {
       return `${prefix}/untitled-${this.urlId}`;
@@ -293,7 +284,7 @@ export default class Document extends ArchivableModel implements Searchable {
 
   @computed
   get noun(): string {
-    return this.template ? t("template") : t("document");
+    return t("document");
   }
 
   @computed
@@ -393,11 +384,6 @@ export default class Document extends ArchivableModel implements Searchable {
   }
 
   @computed
-  get isTemplate(): boolean {
-    return !!this.template;
-  }
-
-  @computed
   get isDraft(): boolean {
     return !this.publishedAt;
   }
@@ -462,11 +448,6 @@ export default class Document extends ArchivableModel implements Searchable {
     return path.map((item) => item.asNavigationNode);
   }
 
-  @computed
-  get isWorkspaceTemplate() {
-    return this.template && !this.collectionId;
-  }
-
   get titleWithDefault(): string {
     return this.title || i18n.t("Untitled");
   }
@@ -477,13 +458,6 @@ export default class Document extends ArchivableModel implements Searchable {
       this.tasks = { total, completed };
     }
   }
-
-  @action
-  share = async () =>
-    this.store.rootStore.shares.create({
-      type: "document",
-      documentId: this.id,
-    });
 
   archive = () => this.store.archive(this);
 
@@ -540,7 +514,7 @@ export default class Document extends ArchivableModel implements Searchable {
   subscribe = () => this.store.subscribe(this);
 
   /**
-   * Unsubscribes the current user to this document.
+   * Unsubscribes the current user from this document.
    *
    * @returns A promise that resolves when the subscription is destroyed.
    */
@@ -581,15 +555,6 @@ export default class Document extends ArchivableModel implements Searchable {
   };
 
   @action
-  templatize = ({
-    collectionId,
-    publish,
-  }: {
-    collectionId: string | null;
-    publish: boolean;
-  }) => this.store.templatize({ id: this.id, collectionId, publish });
-
-  @action
   save = async (
     fields?: Properties<typeof this>,
     options?: SaveOptions
@@ -604,7 +569,7 @@ export default class Document extends ArchivableModel implements Searchable {
       );
 
       // if saving is successful set the new values on the model itself
-      set(this, { ...params, ...model });
+      set(this, Object.assign({}, params, model));
 
       this.persistedAttributes = this.toAPI();
 
@@ -655,7 +620,7 @@ export default class Document extends ArchivableModel implements Searchable {
 
   @computed
   get isActive(): boolean {
-    return !this.isDeleted && !this.isTemplate && !this.isArchived;
+    return !this.isDeleted && !this.isArchived;
   }
 
   @computed

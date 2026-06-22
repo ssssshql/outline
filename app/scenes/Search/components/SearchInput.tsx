@@ -1,6 +1,5 @@
 import { SearchIcon } from "outline-icons";
 import * as React from "react";
-import breakpoint from "styled-components-breakpoint";
 import styled, { useTheme } from "styled-components";
 import { s } from "@shared/styles";
 import Flex from "~/components/Flex";
@@ -54,18 +53,15 @@ const Wrapper = styled(Flex)`
 
 const StyledInput = styled.input`
   width: 100%;
-  padding: 10px 10px 10px 60px;
+  padding-block: 10px 10px;
+  padding-inline: 60px 10px;
   font-size: 30px;
   font-weight: 400;
   outline: none;
   border: 0;
-  background: #14171f;
+  background: ${s("inputBackground")};
   border-radius: 4px;
   color: ${s("text")};
-
-  ${breakpoint("tablet")`
-    background: ${s("sidebarBackground")};
-  `};
 
   ::-webkit-search-cancel-button {
     -webkit-appearance: none;
@@ -86,7 +82,7 @@ const StyledInput = styled.input`
 
 const StyledIcon = styled(SearchIcon)`
   position: absolute;
-  left: 8px;
+  inset-inline-start: 8px;
   opacity: 0.7;
 `;
 

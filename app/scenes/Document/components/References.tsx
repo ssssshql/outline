@@ -30,7 +30,7 @@ function References({ document }: Props) {
 
   useEffect(() => {
     if (!isShare) {
-      void documents.fetchBacklinks(document.id);
+      void documents.fetchRelationships(document.id);
     }
   }, [isShare, documents, document.id]);
 
@@ -171,12 +171,15 @@ const Content = styled.div`
   position: relative;
 `;
 
-const List = styled.div<{ $active: boolean }>`
+const List = styled.ul<{ $active: boolean }>`
   visibility: ${({ $active }) => ($active ? "visible" : "hidden")};
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 `;
 
 export default observer(References);

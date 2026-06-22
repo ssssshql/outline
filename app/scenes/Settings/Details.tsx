@@ -1,5 +1,5 @@
 import { isHexColor } from "class-validator";
-import pickBy from "lodash/pickBy";
+import { pickBy } from "es-toolkit/compat";
 import { observer } from "mobx-react";
 import { TeamIcon } from "outline-icons";
 import { useRef, useState } from "react";
@@ -7,6 +7,7 @@ import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { toast } from "sonner";
 import { ThemeProvider, useTheme } from "styled-components";
+import { errToString } from "@shared/utils/error";
 import { buildDarkTheme, buildLightTheme } from "@shared/styles/theme";
 import type { CustomTheme } from "@shared/types";
 import { TOCPosition, TeamPreference } from "@shared/types";
@@ -110,7 +111,7 @@ function Details() {
         });
         toast.success(t("Settings saved"));
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     },
     [
@@ -164,6 +165,15 @@ function Details() {
     setDefaultCollectionId(selectedValue);
   }, []);
 
+  const handleSeamlessEditChange = React.useCallback(
+    async (checked: boolean) => {
+      team.setPreference(TeamPreference.SeamlessEdit, !checked);
+      await team.save();
+      toast.success(t("Settings saved"));
+    },
+    [team, t]
+  );
+
   const isValid = form.current?.checkValidity();
 
   const newTheme = React.useMemo(
@@ -214,6 +224,8 @@ function Details() {
               autoComplete="organization"
               value={name}
               onChange={handleNameChange}
+              maxLength={TeamValidation.maxNameLength}
+              showCharacterCount
               required
             />
           </SettingRow>
@@ -228,6 +240,8 @@ function Details() {
               onChange={(ev: React.ChangeEvent<HTMLInputElement>) => {
                 setDescription(ev.target.value);
               }}
+              maxLength={TeamValidation.maxDescriptionLength}
+              showCharacterCount
             />
           </SettingRow>
           <SettingRow
@@ -295,7 +309,7 @@ function Details() {
               value={tocPosition}
               onChange={handleTocPositionChange}
               label={t("Table of contents position")}
-              hideLabel
+              labelHidden
             />
           </SettingRow>
 
@@ -334,7 +348,6 @@ function Details() {
             />
           </SettingRow>
           <SettingRow
-            border={false}
             label={t("Start view")}
             name="defaultCollectionId"
             description={t(
@@ -344,6 +357,21 @@ function Details() {
             <DefaultCollectionInputSelect
               onSelectCollection={onSelectCollection}
               defaultCollectionId={defaultCollectionId}
+            />
+          </SettingRow>
+          <SettingRow
+            border={false}
+            name={TeamPreference.SeamlessEdit}
+            label={t("Separate editing")}
+            description={t(
+              "When enabled documents have a separate editing mode by default instead of being always editable. This setting can be overridden by user preferences."
+            )}
+          >
+            <Switch
+              id={TeamPreference.SeamlessEdit}
+              name={TeamPreference.SeamlessEdit}
+              checked={!team.getPreference(TeamPreference.SeamlessEdit)}
+              onChange={handleSeamlessEditChange}
             />
           </SettingRow>
 

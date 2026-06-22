@@ -35,12 +35,16 @@ const DrawerContent = React.forwardRef<
       </DrawerPrimitive.Overlay>
       <DrawerPrimitive.Content ref={ref} asChild>
         <StyledContent
-          animate={{
-            height: bounds.height,
-            transition: { bounce: 0, duration: 0.2 },
-          }}
+          animate={
+            bounds.height
+              ? {
+                  height: bounds.height,
+                  transition: { bounce: 0, duration: 0.2 },
+                }
+              : undefined
+          }
         >
-          <StyledInnerContent ref={measureRef} {...rest}>
+          <StyledInnerContent column ref={measureRef} {...rest}>
             {children}
           </StyledInnerContent>
         </StyledContent>
@@ -58,9 +62,9 @@ const DrawerTitle = React.forwardRef<
   const { hidden, children, ...rest } = props;
 
   const title = (
-    <Text size="medium" weight="bold" as={TitleWrapper} justify="center">
+    <StyledText size="medium" weight="bold" as={TitleWrapper} justify="center">
       {children}
-    </Text>
+    </StyledText>
   );
 
   return (
@@ -74,6 +78,10 @@ const DrawerTitle = React.forwardRef<
   );
 });
 DrawerTitle.displayName = DrawerPrimitive.Title.displayName;
+
+const StyledText = styled(Text)`
+  flex-shrink: 0;
+`;
 
 /** Styled components. */
 const StyledContent = styled(m.div)`
@@ -92,8 +100,9 @@ const StyledContent = styled(m.div)`
   background: ${s("menuBackground")};
 `;
 
-const StyledInnerContent = styled.div`
+const StyledInnerContent = styled(Flex)`
   padding: 6px;
+  padding-bottom: calc(6px + var(--sab, 0px));
   height: 100%;
 `;
 

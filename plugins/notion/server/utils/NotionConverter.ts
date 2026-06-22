@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type {
   BookmarkBlockObjectResponse,
   BreadcrumbBlockObjectResponse,
   BulletedListItemBlockObjectResponse,
+  ChildDatabaseBlockObjectResponse,
+  ChildPageBlockObjectResponse,
   DividerBlockObjectResponse,
   Heading1BlockObjectResponse,
   Heading2BlockObjectResponse,
@@ -15,6 +18,7 @@ import type {
   ImageBlockObjectResponse,
   EmbedBlockObjectResponse,
   TableBlockObjectResponse,
+  TableOfContentsBlockObjectResponse,
   ToDoBlockObjectResponse,
   EquationBlockObjectResponse,
   CodeBlockObjectResponse,
@@ -28,7 +32,7 @@ import type {
   SyncedBlockBlockObjectResponse,
   LinkToPageBlockObjectResponse,
 } from "@notionhq/client/build/src/api-endpoints";
-import isArray from "lodash/isArray";
+import { isArray } from "es-toolkit/compat";
 import { NoticeTypes } from "@shared/editor/nodes/Notice";
 import type { ProsemirrorData, ProsemirrorDoc } from "@shared/types";
 import { MentionType } from "@shared/types";
@@ -45,7 +49,7 @@ export class NotionConverter {
    * Nodes which cannot contain block children in Outline, their children
    * will be flattened into the parent.
    */
-  private static nodesWithoutBlockChildren = ["paragraph", "toggle"];
+  private static nodesWithoutBlockChildren = ["paragraph"];
 
   public static page(item: NotionPage): ProsemirrorDoc {
     return {
@@ -58,14 +62,31 @@ export class NotionConverter {
     const mapChild = (
       child: Block
     ): ProsemirrorData | ProsemirrorData[] | undefined => {
-      if (child.type === "child_page" || child.type === "child_database") {
-        return; // this will be created as a nested page, no need to handle/convert.
+      if (child.type === "child_page") {
+        return this.child_page(child);
+      }
+      if (child.type === "child_database") {
+        return this.child_database(child);
       }
 
       // @ts-expect-error Not all blocks have an interface
       if (this[child.type]) {
         // @ts-expect-error Not all blocks have an interface
         const response = this[child.type](child);
+
+        // @ts-expect-error Not all blocks have an interface
+        const canToggle = child[child.type].is_toggleable === true;
+
+        if (canToggle) {
+          return {
+            type: "container_toggle",
+            attrs: {
+              id: randomUUID(),
+            },
+            content: [response, ...this.mapChildren(child)],
+          };
+        }
+
         if (
           response &&
           this.nodesWithoutBlockChildren.includes(response.type) &&
@@ -258,7 +279,7 @@ export class NotionConverter {
     };
   }
 
-  private static rich_text(item: RichTextItemResponse) {
+  private static rich_text = (item: RichTextItemResponse) => {
     const annotationToMark: Record<
       keyof RichTextItemResponse["annotations"],
       string
@@ -365,11 +386,10 @@ export class NotionConverter {
     }
 
     return undefined;
-  }
+  };
 
-  private static rich_text_to_plaintext(item: RichTextItemResponse) {
-    return item.plain_text;
-  }
+  private static rich_text_to_plaintext = (item: RichTextItemResponse) =>
+    item.plain_text;
 
   private static divider(_: DividerBlockObjectResponse) {
     return {
@@ -490,6 +510,42 @@ export class NotionConverter {
       : undefined;
   }
 
+  private static child_page(
+    item: Block<ChildPageBlockObjectResponse>
+  ): ProsemirrorData {
+    return {
+      type: "paragraph",
+      content: [
+        {
+          type: "mention",
+          attrs: {
+            type: MentionType.Document,
+            modelId: item.id,
+            label: item.child_page.title,
+          },
+        },
+      ],
+    };
+  }
+
+  private static child_database(
+    item: Block<ChildDatabaseBlockObjectResponse>
+  ): ProsemirrorData {
+    return {
+      type: "paragraph",
+      content: [
+        {
+          type: "mention",
+          attrs: {
+            type: MentionType.Document,
+            modelId: item.id,
+            label: item.child_database.title,
+          },
+        },
+      ],
+    };
+  }
+
   private static link_to_page(item: LinkToPageBlockObjectResponse) {
     if (item.link_to_page.type !== "page_id") {
       return undefined;
@@ -530,7 +586,7 @@ export class NotionConverter {
 
   private static table(
     item: TableBlockObjectResponse & {
-      children: Array<{
+      children?: Array<{
         table_row: {
           cells: Array<Array<RichTextItemResponse>>;
         };
@@ -541,7 +597,7 @@ export class NotionConverter {
   ) {
     return {
       type: "table",
-      content: item.children.map((tr, y) => ({
+      content: (item.children ?? []).map((tr, y) => ({
         type: "tr",
         content: tr.table_row.cells.map((td, x) => ({
           type:
@@ -560,10 +616,23 @@ export class NotionConverter {
     };
   }
 
-  private static toggle(item: ToggleBlockObjectResponse) {
+  private static table_of_contents(_: TableOfContentsBlockObjectResponse) {
+    return undefined;
+  }
+
+  private static toggle(item: Block<ToggleBlockObjectResponse>) {
     return {
-      type: "paragraph",
-      content: item.toggle.rich_text.map(this.rich_text).filter(Boolean),
+      type: "container_toggle",
+      attrs: {
+        id: randomUUID(),
+      },
+      content: [
+        {
+          type: "paragraph",
+          content: item.toggle.rich_text.map(this.rich_text).filter(Boolean),
+        },
+        ...this.mapChildren(item),
+      ],
     };
   }
 

@@ -1,6 +1,6 @@
 import { faker } from "@faker-js/faker";
 import { randomUUID } from "node:crypto";
-import WelcomeEmail from "@server/emails/templates/WelcomeEmail";
+import { errToString } from "@shared/utils/error";
 import { TeamDomain } from "@server/models";
 import Collection from "@server/models/Collection";
 import UserAuthentication from "@server/models/UserAuthentication";
@@ -15,7 +15,6 @@ describe("accountProvisioner", () => {
 
   describe("hosted", () => {
     it("should create a new user and team", async () => {
-      const spy = jest.spyOn(WelcomeEmail.prototype, "schedule");
       const email = faker.internet.email();
       const { user, team, isNewTeam, isNewUser } = await accountProvisioner(
         ctx,
@@ -50,19 +49,15 @@ describe("accountProvisioner", () => {
       expect(user.email).toEqual(email);
       expect(isNewUser).toEqual(true);
       expect(isNewTeam).toEqual(true);
-      expect(spy).toHaveBeenCalled();
       const collectionCount = await Collection.count({
         where: {
           teamId: team.id,
         },
       });
       expect(collectionCount).toEqual(1);
-
-      spy.mockRestore();
     });
 
-    it("should update exising user and authentication", async () => {
-      const spy = jest.spyOn(WelcomeEmail.prototype, "schedule");
+    it("should update existing user and authentication", async () => {
       const existingTeam = await buildTeam();
       const providers = await existingTeam.$get("authenticationProviders");
       const authenticationProvider = providers[0];
@@ -100,9 +95,6 @@ describe("accountProvisioner", () => {
       expect(user.email).toEqual(newEmail);
       expect(isNewTeam).toEqual(false);
       expect(isNewUser).toEqual(false);
-      expect(spy).not.toHaveBeenCalled();
-
-      spy.mockRestore();
     });
 
     it("should allow authentication by email matching", async () => {
@@ -124,6 +116,7 @@ describe("accountProvisioner", () => {
         user: {
           name: userWithoutAuth.name,
           email,
+          emailVerified: true,
           avatarUrl: userWithoutAuth.avatarUrl,
         },
         team: {
@@ -145,7 +138,56 @@ describe("accountProvisioner", () => {
       expect(user.id).toEqual(userWithoutAuth.id);
       expect(isNewTeam).toEqual(false);
       expect(isNewUser).toEqual(false);
-      expect(user.authentications.length).toEqual(0);
+    });
+
+    it("should not allow authentication by email matching when email is unverified", async () => {
+      const subdomain = faker.internet.domainWord();
+      const existingTeam = await buildTeam({
+        subdomain,
+      });
+
+      const providers = await existingTeam.$get("authenticationProviders");
+      const authenticationProvider = providers[0];
+      const email = faker.internet.email();
+      const userWithoutAuth = await buildUser({
+        email,
+        teamId: existingTeam.id,
+        authentications: [],
+      });
+
+      let error;
+      try {
+        await accountProvisioner(ctx, {
+          user: {
+            name: userWithoutAuth.name,
+            email,
+            emailVerified: false,
+            avatarUrl: userWithoutAuth.avatarUrl,
+          },
+          team: {
+            teamId: existingTeam.id,
+            name: existingTeam.name,
+            avatarUrl: existingTeam.avatarUrl,
+            subdomain,
+          },
+          authenticationProvider: {
+            name: authenticationProvider.name,
+            providerId: authenticationProvider.providerId,
+          },
+          authentication: {
+            providerId: randomUUID(),
+            accessToken: "123",
+            scopes: ["read"],
+          },
+        });
+      } catch (err) {
+        error = err;
+      }
+
+      expect(error).toBeTruthy();
+      expect(
+        error instanceof Error && "id" in error ? error.id : undefined
+      ).toEqual("invalid_authentication");
     });
 
     it("should throw an error when authentication provider is disabled", async () => {
@@ -260,6 +302,7 @@ describe("accountProvisioner", () => {
           user: {
             name: "Jenny Tester",
             email,
+            emailVerified: true,
             avatarUrl: faker.image.avatar(),
           },
           team: {
@@ -284,7 +327,6 @@ describe("accountProvisioner", () => {
     });
 
     it("should create a new user in an existing team when the domain is allowed", async () => {
-      const spy = jest.spyOn(WelcomeEmail.prototype, "schedule");
       const team = await buildTeam();
       const admin = await buildAdmin({ teamId: team.id });
       const authenticationProviders = await team.$get(
@@ -302,6 +344,7 @@ describe("accountProvisioner", () => {
         user: {
           name: "Jenny Tester",
           email,
+          emailVerified: true,
           avatarUrl: faker.image.avatar(),
         },
         team: {
@@ -325,7 +368,6 @@ describe("accountProvisioner", () => {
       expect(auth.scopes[0]).toEqual("read");
       expect(user.email).toEqual(email);
       expect(isNewUser).toEqual(true);
-      expect(spy).toHaveBeenCalled();
       // should provision welcome collection
       const collectionCount = await Collection.count({
         where: {
@@ -333,12 +375,9 @@ describe("accountProvisioner", () => {
         },
       });
       expect(collectionCount).toEqual(1);
-
-      spy.mockRestore();
     });
 
     it("should create a new user in an existing team", async () => {
-      const spy = jest.spyOn(WelcomeEmail.prototype, "schedule");
       const team = await buildTeam();
       const authenticationProviders = await team.$get(
         "authenticationProviders"
@@ -373,7 +412,6 @@ describe("accountProvisioner", () => {
       expect(auth.scopes[0]).toEqual("read");
       expect(user.email).toEqual(email);
       expect(isNewUser).toEqual(true);
-      expect(spy).toHaveBeenCalled();
       // should provision welcome collection
       const collectionCount = await Collection.count({
         where: {
@@ -381,12 +419,9 @@ describe("accountProvisioner", () => {
         },
       });
       expect(collectionCount).toEqual(1);
-
-      spy.mockRestore();
     });
 
     it("should handle emails with capital letters correctly", async () => {
-      const spy = jest.spyOn(WelcomeEmail.prototype, "schedule");
       const email = "Jenny.Tester@EXAMPLE.COM";
 
       const params = {
@@ -419,7 +454,6 @@ describe("accountProvisioner", () => {
       expect(user.email).toEqual(email);
       expect(isNewUser).toEqual(true);
       expect(isNewTeam).toEqual(true);
-      expect(spy).toHaveBeenCalled();
 
       // Test that we can find the user again
       const existing = await accountProvisioner(ctx, params);
@@ -428,8 +462,6 @@ describe("accountProvisioner", () => {
       expect(existing.isNewTeam).toEqual(false);
       expect(existing.isNewUser).toEqual(false);
       expect(existing.user.id).toEqual(user.id);
-
-      spy.mockRestore();
     });
 
     it("should allow connecting a new authentication provider while logged in", async () => {
@@ -504,7 +536,7 @@ describe("accountProvisioner", () => {
         error = err;
       }
 
-      expect(error.message).toEqual("Invalid authentication");
+      expect(errToString(error)).toEqual("Invalid authentication");
     });
 
     it("should always use existing team if self-hosted", async () => {

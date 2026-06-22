@@ -11,8 +11,11 @@ import DocumentTitle from "./DocumentTitle";
 import Editor from "~/components/Editor";
 import { richExtensions, withComments } from "@shared/editor/nodes";
 import Diff from "@shared/editor/extensions/Diff";
+import { RevisionHelper } from "@shared/utils/RevisionHelper";
 import useQuery from "~/hooks/useQuery";
+import useStores from "~/hooks/useStores";
 import { type Editor as TEditor } from "~/editor";
+import { ChangesetHelper } from "@shared/editor/lib/ChangesetHelper";
 
 type Props = Omit<EditorProps, "extensions"> & {
   /** The ID of the revision */
@@ -37,22 +40,44 @@ type Props = Omit<EditorProps, "extensions"> & {
  */
 function RevisionViewer(props: Props, ref: React.Ref<TEditor>) {
   const { document, children, revision } = props;
+  const { revisions } = useStores();
   const query = useQuery();
   const showChanges = props.showChanges ?? query.has("changes");
+  const compareToParam = query.get("compareTo");
+
+  const compareToRevisionId = React.useMemo(() => {
+    if (!compareToParam) {
+      return undefined;
+    }
+    return compareToParam === "latest"
+      ? RevisionHelper.latestId(revision.documentId)
+      : compareToParam;
+  }, [compareToParam, revision.documentId]);
+
+  const compareToRevision = compareToRevisionId
+    ? revisions.get(compareToRevisionId)
+    : undefined;
+
+  const comparisonData = compareToRevisionId
+    ? compareToRevision?.data
+    : revision.before?.data;
 
   /**
    * Create editor extensions with the Diff extension configured to render
    * the calculated changes as decorations in the editor.
    */
-  const extensions = React.useMemo(
-    () => [
+  const extensions = React.useMemo(() => {
+    const changeset = ChangesetHelper.getChangeset(
+      revision.data,
+      comparisonData
+    );
+    return [
       ...withComments(richExtensions),
-      ...(showChanges && revision.changeset?.changes
-        ? [new Diff({ changes: revision.changeset?.changes })]
+      ...(showChanges && changeset?.changes
+        ? [new Diff({ changes: changeset?.changes })]
         : []),
-    ],
-    [revision.changeset, showChanges]
-  );
+    ];
+  }, [revision.data, comparisonData, showChanges]);
 
   return (
     <Flex auto column>
@@ -67,9 +92,10 @@ function RevisionViewer(props: Props, ref: React.Ref<TEditor>) {
         document={document}
         revision={revision}
         to={documentPath(document)}
-        rtl={revision.rtl}
+        $rtl={revision.rtl}
       />
       <Editor
+        key={compareToRevisionId}
         ref={ref}
         defaultValue={revision.data}
         extensions={extensions}

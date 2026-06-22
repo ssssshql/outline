@@ -1,4 +1,4 @@
-import debounce from "lodash/debounce";
+import { debounce } from "es-toolkit/compat";
 import { observer } from "mobx-react";
 import { useMemo, useRef, useCallback, useEffect, Suspense } from "react";
 import { useTranslation } from "react-i18next";
@@ -50,7 +50,7 @@ function Overview({ collection, readOnly }: Props) {
 
   useEffect(
     () => () => {
-      handleSave.flush();
+      void handleSave.flush();
     },
     [handleSave]
   );
@@ -61,7 +61,7 @@ function Overview({ collection, readOnly }: Props) {
     () => ({
       padding: "0 32px",
       margin: "0 -32px",
-      paddingBottom: `calc(50vh - ${childOffsetHeight}px)`,
+      paddingBottom: `calc(30vh - ${childOffsetHeight}px)`,
     }),
     [childOffsetHeight]
   );
@@ -87,7 +87,7 @@ function Overview({ collection, readOnly }: Props) {
   return (
     <>
       {collections.isSaving && <LoadingIndicator />}
-      {(collection.hasDescription || can.update) && (
+      {(can.update || readOnly) && (
         <Suspense fallback={<Placeholder>Loading…</Placeholder>}>
           <MeasuredContainer name="document">
             <Editor

@@ -35,7 +35,7 @@ export default async function documentDuplicator(
     parentDocumentId,
     icon: document.icon,
     color: document.color,
-    template: document.template,
+    fullWidth: document.fullWidth,
     title: title ?? document.title,
     content: ProsemirrorHelper.removeMarks(
       DocumentHelper.toProsemirror(document),
@@ -86,6 +86,7 @@ export default async function documentDuplicator(
         parentDocumentId: duplicatedDocument.id,
         icon: childDocument.icon,
         color: childDocument.color,
+        fullWidth: childDocument.fullWidth,
         title: childDocument.title,
         content: ProsemirrorHelper.removeMarks(
           DocumentHelper.toProsemirror(childDocument),
@@ -104,7 +105,7 @@ export default async function documentDuplicator(
     }
   }
 
-  if (recursive && !document.template) {
+  if (recursive) {
     await duplicateChildDocuments(document, duplicated);
   }
 

@@ -1,14 +1,25 @@
 /* oxlint-disable no-restricted-imports, react/rules-of-hooks */
+import { promises as dns } from "node:dns";
 import type http from "node:http";
 import type https from "node:https";
-import nodeFetch, { type RequestInit, type Response } from "node-fetch";
+import * as net from "node:net";
+import nodeFetch, {
+  Headers,
+  type RequestInit,
+  type Response,
+} from "node-fetch";
 import { getProxyForUrl } from "proxy-from-env";
 import tunnelAgent, { type TunnelAgent } from "tunnel-agent";
-import { useAgent as useFilteringAgent } from "request-filtering-agent";
+import { errToString } from "@shared/utils/error";
 import env from "@server/env";
+import { InvalidRequestError } from "@server/errors";
 import Logger from "@server/logging/Logger";
-import { capitalize, defaults } from "lodash";
-import { InternalError } from "@server/errors";
+import { capitalize } from "es-toolkit/compat";
+import {
+  type RequestFilteringAgentOptions,
+  useAgent as useFilteringAgent,
+  validateIPAddress,
+} from "./requestFilteringAgent";
 
 interface UrlWithTunnel extends URL {
   tunnelMethod?: string;
@@ -24,6 +35,7 @@ const DefaultOptions = {
 };
 
 export type { RequestInit } from "node-fetch";
+export { Headers };
 
 /**
  * Default user agent string for outgoing requests.
@@ -38,6 +50,58 @@ export const outlineUserAgent = `Outline-${
  */
 export const chromeUserAgent =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+
+/**
+ * Resolves the URL's hostname and validates every returned address against the
+ * filtering rules. Used as a pre-flight check when a proxy is configured,
+ * since both proxy code paths in buildAgent() bypass the per-connection DNS
+ * hook in the filtering agent.
+ *
+ * @param url The target URL to validate.
+ * @param options Allow/deny rules to apply.
+ * @param signal Optional abort signal — if it fires (e.g. fetch timeout),
+ * the validation rejects with an AbortError so the configured timeout
+ * applies to slow DNS resolution as well.
+ * @throws An error if any resolved address is disallowed.
+ */
+const validateTargetURL = async (
+  url: URL,
+  options: RequestFilteringAgentOptions,
+  signal?: AbortSignal | null
+): Promise<void> => {
+  const host = url.hostname;
+  const lookup =
+    net.isIP(host) !== 0
+      ? Promise.resolve([{ address: host, family: net.isIP(host) }])
+      : dns.lookup(host, { all: true });
+
+  const addresses = signal
+    ? await Promise.race([
+        lookup,
+        new Promise<never>((_, reject) => {
+          if (signal.aborted) {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () =>
+              reject(
+                Object.assign(new Error("aborted"), { name: "AbortError" })
+              ),
+            { once: true }
+          );
+        }),
+      ])
+    : await lookup;
+
+  for (const { address, family } of addresses) {
+    const err = validateIPAddress({ address, family, host }, options);
+    if (err) {
+      throw err;
+    }
+  }
+};
 
 /**
  * Wrapper around fetch that uses the request-filtering-agent in cloud hosted
@@ -70,15 +134,41 @@ export default async function fetch(
     }, timeout);
   }
 
+  const signal = abortController?.signal || rest.signal;
+
   try {
+    // When a proxy is configured, the request-filtering-agent's per-connection
+    // DNS hook does not see the target host (the tunnel-agent path bypasses it
+    // entirely, and the http-over-http path only filters the proxy's IP).
+    // Pre-resolve and validate the target ourselves so SSRF protection still
+    // applies to user-supplied URLs.
+    //
+    // We resolve DNS locally, but the proxy performs its own DNS resolution
+    // when forwarding the request. A determined attacker controlling DNS
+    // could return a public IP here and a private IP to the proxy. Closing
+    // that gap would require the proxy itself to enforce egress rules.
+    const parsedURL = new URL(url);
+    if (getProxyForUrl(parsedURL.href)) {
+      await validateTargetURL(
+        parsedURL,
+        {
+          allowPrivateIPAddress,
+          allowIPAddressList: env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
+        },
+        signal
+      );
+    }
+
+    const headers = new Headers({ "User-Agent": outlineUserAgent });
+    new Headers(rest?.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+
     const response = await nodeFetch(url, {
       ...rest,
-      headers: {
-        "User-Agent": outlineUserAgent,
-        ...rest?.headers,
-      },
-      signal: abortController?.signal || rest.signal,
-      agent: buildAgent(url, init),
+      headers,
+      signal,
+      agent: buildAgent(url, { signal, allowPrivateIPAddress }),
     });
 
     if (!response.ok) {
@@ -92,12 +182,15 @@ export default async function fetch(
 
     return response;
   } catch (err) {
-    if (err.name === "AbortError") {
+    if (err instanceof Error && "name" in err && err.name === "AbortError") {
       throw new Error(`Request timeout after ${timeout}ms`);
     }
-    if (!env.isCloudHosted && err.message?.startsWith("DNS lookup")) {
-      throw InternalError(
-        `${err.message}\n\nTo allow this request, add the IP address or CIDR range to the ALLOWED_PRIVATE_IP_ADDRESSES environment variable.`
+    const message = errToString(err);
+    if (message.startsWith("DNS lookup")) {
+      throw InvalidRequestError(
+        env.isCloudHosted
+          ? message
+          : `${message}\n\nTo allow this request, add the IP address or CIDR range to the ALLOWED_PRIVATE_IP_ADDRESSES environment variable.`
       );
     }
     throw err;
@@ -166,17 +259,20 @@ const buildTunnel = (proxy: UrlWithTunnel, options: RequestInit) => {
  * if necessary. If a proxy is detected in the environment, it will use that
  * proxy agent to tunnel the request.
  *
- * @param url The URL to fetch
- * @param options The fetch options
- * @returns An http or https agent configured for the URL
+ * @param url The URL to fetch.
+ * @param options Options controlling agent behavior.
+ * @param options.signal An abort signal used to destroy the agent on cancellation or timeout.
+ * @param options.allowPrivateIPAddress Whether to allow requests to private IP addresses.
+ * @returns An http or https agent configured for the URL.
  */
 function buildAgent(
   url: string,
-  options: RequestInit & {
+  options: {
+    signal?: AbortSignal | null;
     allowPrivateIPAddress?: boolean;
   } = {}
 ) {
-  const agentOptions = defaults(options, DefaultOptions);
+  const agentOptions = { ...DefaultOptions };
   const parsedURL = new URL(url);
   const proxyURL = getProxyForUrl(parsedURL.href);
   let agent: https.Agent | http.Agent | undefined;
@@ -184,7 +280,8 @@ function buildAgent(
   // Add allowIPAddressList from environment configuration
   const filteringOptions = {
     ...agentOptions,
-    allowIPAddressList: env.ALLOWED_PRIVATE_IP_ADDRESSES,
+    allowPrivateIPAddress: options.allowPrivateIPAddress,
+    allowIPAddressList: env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
   };
 
   if (proxyURL) {
@@ -210,7 +307,9 @@ function buildAgent(
       }
       agent = useFilteringAgent(proxyURL.toString(), filteringOptions);
     } else {
-      // Note request filtering agent does not support https tunneling via a proxy
+      // tunnel-agent bypasses the filtering agent's per-connection DNS hook,
+      // so SSRF protection for this branch comes from the validateTargetURL
+      // pre-flight in fetch() above.
       agent =
         buildTunnel(parsedProxyURL, agentOptions) ||
         useFilteringAgent(parsedURL.toString(), filteringOptions);

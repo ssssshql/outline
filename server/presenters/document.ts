@@ -1,6 +1,8 @@
+import { Op } from "sequelize";
 import { Hour } from "@shared/utils/time";
 import { traceFunction } from "@server/logging/tracing";
 import type { Document } from "@server/models";
+import FileOperation from "@server/models/FileOperation";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import type { APIContext } from "@server/types";
 import presentUser from "./user";
@@ -16,6 +18,9 @@ type Options = {
   includeData?: boolean;
   /** Include the updatedAt timestamp for public documents. */
   includeUpdatedAt?: boolean;
+  /** Include the unresolved comment count. Each call triggers a Redis lookup
+   * so only enable when the consumer needs the signal (e.g. MCP). */
+  includeCommentCount?: boolean;
   /** Array of backlink document IDs to include in the response. */
   backlinkIds?: string[];
 };
@@ -54,7 +59,12 @@ async function presentDocument(
     url: document.path,
     urlId: document.urlId,
     title: document.title,
-    data: asData || options?.includeData ? data : undefined,
+    data:
+      options?.includeData === false
+        ? undefined
+        : asData || options?.includeData
+          ? data
+          : undefined,
     text,
     icon: document.icon,
     color: document.color,
@@ -88,29 +98,34 @@ async function presentDocument(
     delete res.updatedAt;
   }
 
-  if (!options.isPublic) {
-    const source = await document.$get("import");
+  if (document.summary) {
+    res.summary = document.summary;
+  }
 
+  if (!options.isPublic) {
     res.tasks = document.tasks;
     res.isCollectionDeleted = await document.isCollectionDeleted();
     res.collectionId = document.collectionId;
     res.parentDocumentId = document.parentDocumentId;
     res.createdBy = presentUser(document.createdBy);
     res.updatedBy = presentUser(document.updatedBy);
-    res.collaboratorIds = document.collaboratorIds;
+    res.collaboratorIds = document.collaboratorIds ?? [];
     res.templateId = document.templateId;
-    res.template = document.template;
     res.insightsEnabled = document.insightsEnabled;
     res.popularityScore = document.popularityScore;
-    res.sourceMetadata = document.sourceMetadata
-      ? {
-          importedAt: source?.createdAt ?? document.createdAt,
-          importType: source?.format,
-          createdByName: document.sourceMetadata.createdByName,
-          fileName: document.sourceMetadata?.fileName,
-          originalDocumentId: document.sourceMetadata?.originalDocumentId,
-        }
-      : undefined;
+    if (options.includeCommentCount) {
+      res.commentCount = await document.commentCount;
+    }
+    if (document.sourceMetadata) {
+      const source = document.import ?? (await document.$get("import"));
+      res.sourceMetadata = {
+        importedAt: source?.createdAt ?? document.createdAt,
+        importType: source?.format,
+        createdByName: document.sourceMetadata.createdByName,
+        fileName: document.sourceMetadata?.fileName,
+        originalDocumentId: document.sourceMetadata?.originalDocumentId,
+      };
+    }
   }
 
   return res;
@@ -119,3 +134,43 @@ async function presentDocument(
 export default traceFunction({
   spanName: "presenters",
 })(presentDocument);
+
+/**
+ * Batch-present multiple documents, fetching all related FileOperation records
+ * in a single query instead of one per document.
+ *
+ * @param ctx the API context.
+ * @param documents the documents to present.
+ * @param options presentation options forwarded to presentDocument.
+ * @returns array of presented document objects.
+ */
+export async function presentDocuments(
+  ctx: APIContext | undefined,
+  documents: Document[],
+  options?: Options | null
+) {
+  const opts = { isPublic: false, ...options };
+
+  if (!opts.isPublic) {
+    const importIds = documents
+      .filter((doc) => doc.sourceMetadata && doc.importId)
+      .map((doc) => doc.importId!);
+
+    if (importIds.length > 0) {
+      const sources = await FileOperation.unscoped().findAll({
+        where: { id: { [Op.in]: importIds } },
+      });
+      const sourceMap = new Map(sources.map((s) => [s.id, s]));
+
+      for (const doc of documents) {
+        if (doc.importId) {
+          doc.import = sourceMap.get(doc.importId) ?? null;
+        }
+      }
+    }
+  }
+
+  return Promise.all(
+    documents.map((document) => presentDocument(ctx, document, opts))
+  );
+}

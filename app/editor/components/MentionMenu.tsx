@@ -1,7 +1,13 @@
 import { isEmail } from "class-validator";
 import { observer } from "mobx-react";
 import { v4 as uuidv4 } from "uuid";
-import { DocumentIcon, PlusIcon, CollectionIcon } from "outline-icons";
+import { runInAction } from "mobx";
+import {
+  DocumentIcon,
+  PlusIcon,
+  NewDocumentIcon,
+  CollectionIcon,
+} from "outline-icons";
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -9,11 +15,20 @@ import { toast } from "sonner";
 import Icon from "@shared/components/Icon";
 import type { MenuItem } from "@shared/editor/types";
 import { MentionType } from "@shared/types";
+import {
+  dateToReadable,
+  dateToRelativeReadable,
+  parseISODate,
+  toISODate,
+} from "@shared/utils/date";
 import parseDocumentSlug from "@shared/utils/parseDocumentSlug";
+import { parseNaturalLanguageDate } from "@shared/utils/parseNaturalLanguageDate";
 import { Avatar, AvatarSize, GroupAvatar } from "~/components/Avatar";
 import DocumentBreadcrumb from "~/components/DocumentBreadcrumb";
+import { DynamicCalendarIcon } from "@shared/components/DynamicCalendarIcon";
 import Flex from "~/components/Flex";
 import {
+  DateSection,
   DocumentsSection,
   UserSection,
   CollectionsSection,
@@ -21,11 +36,11 @@ import {
 } from "~/actions/sections";
 import useRequest from "~/hooks/useRequest";
 import useStores from "~/hooks/useStores";
+import useUserLocale from "~/hooks/useUserLocale";
 import { client } from "~/utils/ApiClient";
 import type { Props as SuggestionsMenuProps } from "./SuggestionsMenu";
 import SuggestionsMenu from "./SuggestionsMenu";
 import SuggestionsMenuItem from "./SuggestionsMenuItem";
-import { runInAction } from "mobx";
 
 interface MentionItem extends MenuItem {
   attrs: {
@@ -42,15 +57,72 @@ type Props = Omit<
   "renderMenuItem" | "items" | "embeds"
 >;
 
-function MentionMenu({ search, isActive, ...rest }: Props) {
+function MentionMenu({ search = "", isActive, ...rest }: Props) {
   const [loaded, setLoaded] = useState(false);
-  const [items, setItems] = useState<MentionItem[]>([]);
   const { t } = useTranslation();
   const { auth, documents, users, collections, groups } = useStores();
   const actorId = auth.currentUserId;
   const location = useLocation();
   const documentId = parseDocumentSlug(location.pathname);
+  const userLocale = useUserLocale();
   const maxResultsInSection = search ? 25 : 5;
+
+  // Surface a date suggestion when the search query parses as a natural
+  // language date (e.g. "tomorrow", "next friday", "jan 2"). Parsing is
+  // asynchronous as chrono-node is loaded lazily, so the result is held in
+  // state and applied once resolved.
+  const [parsedISODate, setParsedISODate] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!search) {
+      setParsedISODate(undefined);
+      return;
+    }
+    let cancelled = false;
+    void parseNaturalLanguageDate(search)
+      .then((date) => {
+        if (!cancelled) {
+          setParsedISODate(date ? toISODate(date) : undefined);
+        }
+      })
+      .catch(() => {
+        // Parsing failed (e.g. the chrono chunk failed to load); drop the
+        // suggestion rather than leaving a stale one.
+        if (!cancelled) {
+          setParsedISODate(undefined);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [search]);
+
+  let dateItems: MentionItem[] = [];
+
+  if (actorId && parsedISODate) {
+    const title = dateToRelativeReadable(parsedISODate, t, userLocale);
+    const subtitle = dateToReadable(parsedISODate, userLocale);
+
+    dateItems = [
+      {
+        name: "mention",
+        icon: (
+          <DynamicCalendarIcon day={parseISODate(parsedISODate)?.getDate()} />
+        ),
+        title,
+        subtitle: title !== subtitle ? subtitle : undefined,
+        section: DateSection,
+        appendSpace: true,
+        attrs: {
+          id: uuidv4(),
+          type: MentionType.Date,
+          modelId: parsedISODate,
+          label: parsedISODate,
+          actorId,
+        },
+      } as MentionItem,
+    ];
+  }
 
   const { loading, request } = useRequest(
     useCallback(async () => {
@@ -65,7 +137,7 @@ function MentionMenu({ search, isActive, ...rest }: Props) {
         res.data.collections.map(collections.add);
         res.data.groups.map(groups.add);
       });
-    }, [search, documents, users, collections])
+    }, [search, documents, users, collections, groups, maxResultsInSection])
   );
 
   useEffect(() => {
@@ -76,7 +148,15 @@ function MentionMenu({ search, isActive, ...rest }: Props) {
 
   useEffect(() => {
     if (actorId && !loading) {
-      const items: MentionItem[] = users
+      setLoaded(true);
+    }
+  }, [actorId, loading]);
+
+  // Computed in the render body so MobX observer can track store access
+  // (e.g. searchSuppressed). Previously this lived inside a useEffect which
+  // runs outside the reactive context and triggered MobX warnings.
+  const mentionItems: MentionItem[] = actorId
+    ? users
         .findByQuery(search, { maxResults: maxResultsInSection })
         .map(
           (user) =>
@@ -122,7 +202,9 @@ function MentionMenu({ search, isActive, ...rest }: Props) {
                 </Flex>
               ),
               title: group.name,
-              subtitle: t("{{ count }} members", { count: group.memberCount }),
+              subtitle: t("{{ count }} members", {
+                count: group.memberCount,
+              }),
               section: GroupSection,
               appendSpace: true,
               attrs: {
@@ -218,26 +300,33 @@ function MentionMenu({ search, isActive, ...rest }: Props) {
               label: search,
             },
           } as MentionItem,
-        ]);
+          {
+            name: "link",
+            icon: <NewDocumentIcon />,
+            title: search?.trim(),
+            section: DocumentsSection,
+            subtitle: t("Create a nested doc"),
+            visible: !!search && !isEmail(search) && !!documentId,
+            priority: -2,
+            appendSpace: true,
+            attrs: {
+              id: uuidv4(),
+              type: MentionType.Document,
+              modelId: uuidv4(),
+              actorId,
+              label: search,
+              nested: true,
+            },
+          } as MentionItem,
+        ])
+    : [];
 
-      setItems(items);
-      setLoaded(true);
-    }
-  }, [
-    t,
-    actorId,
-    loading,
-    search,
-    users,
-    documents,
-    maxResultsInSection,
-    groups,
-    collections,
-  ]);
+  const items: MentionItem[] = [...dateItems, ...mentionItems];
 
   const handleSelect = useCallback(
     async (item: MentionItem) => {
       if (
+        item.attrs.type === MentionType.Date ||
         item.attrs.type === MentionType.Document ||
         item.attrs.type === MentionType.Collection
       ) {

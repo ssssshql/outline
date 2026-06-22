@@ -10,24 +10,25 @@ import {
   CommentIcon,
   LinkIcon,
 } from "outline-icons";
-import type { EditorState } from "prosemirror-state";
 import { isNodeActive } from "@shared/editor/queries/isNodeActive";
-import type { MenuItem } from "@shared/editor/types";
-import type { Dictionary } from "~/hooks/useDictionary";
+import type { MenuItem, SelectionContext } from "@shared/editor/types";
 import { metaDisplay } from "@shared/utils/keyboard";
 import { ImageSource } from "@shared/editor/lib/FileHelper";
 import Desktop from "~/utils/Desktop";
 import { isMarkActive } from "@shared/editor/queries/isMarkActive";
+import { t } from "i18next";
 
-export default function imageMenuItems(
-  state: EditorState,
-  readOnly: boolean,
-  dictionary: Dictionary
-): MenuItem[] {
-  if (readOnly) {
+/**
+ * Returns menu items for the image selection toolbar.
+ *
+ * @param ctx - the current selection context.
+ * @returns an array of menu items.
+ */
+export default function imageMenuItems(ctx: SelectionContext): MenuItem[] {
+  if (ctx.readOnly) {
     return [];
   }
-  const { schema } = state;
+  const { schema, state } = ctx;
   const isLeftAligned = isNodeActive(schema.nodes.image, {
     layoutClass: "left-50",
   });
@@ -48,14 +49,14 @@ export default function imageMenuItems(
   return [
     {
       name: "alignLeft",
-      tooltip: dictionary.alignLeft,
+      tooltip: t("Align left"),
       icon: <AlignImageLeftIcon />,
       active: isLeftAligned,
       visible: !isEmptyDiagram(state),
     },
     {
       name: "alignCenter",
-      tooltip: dictionary.alignCenter,
+      tooltip: t("Align center"),
       icon: <AlignImageCenterIcon />,
       active: (state) =>
         isNodeActive(schema.nodes.image)(state) &&
@@ -66,14 +67,14 @@ export default function imageMenuItems(
     },
     {
       name: "alignRight",
-      tooltip: dictionary.alignRight,
+      tooltip: t("Align right"),
       icon: <AlignImageRightIcon />,
       active: isRightAligned,
       visible: !isEmptyDiagram(state),
     },
     {
       name: "alignFullWidth",
-      tooltip: dictionary.alignFullWidth,
+      tooltip: t("Full width"),
       icon: <AlignFullWidthIcon />,
       active: isFullWidthAligned,
       visible: !isEmptyDiagram(state),
@@ -83,7 +84,7 @@ export default function imageMenuItems(
     },
     {
       name: "dimensions",
-      tooltip: dictionary.dimensions,
+      tooltip: `${t("Width")} × ${t("Height")}`,
       visible: !isFullWidthAligned(state) && !isEmptyDiagram(state),
       skipIcon: true,
     },
@@ -92,34 +93,34 @@ export default function imageMenuItems(
     },
     {
       name: "editDiagram",
-      tooltip: dictionary.editDiagram,
+      tooltip: t("Edit diagram"),
       icon: <EditIcon />,
       visible: isDiagram(state) && !Desktop.isElectron(),
     },
     {
       name: "downloadImage",
-      tooltip: dictionary.downloadImage,
+      tooltip: t("Download image"),
       icon: <DownloadIcon />,
       visible: !!fetch && !isEmptyDiagram(state),
     },
     {
-      tooltip: dictionary.replaceImage,
+      tooltip: t("Replace image"),
       icon: <ReplaceIcon />,
       visible: !isDiagram(state),
       children: [
         {
           name: "replaceImage",
-          label: dictionary.uploadImage,
+          label: t("Upload an image"),
         },
         {
           name: "editImageUrl",
-          label: dictionary.editImageUrl,
+          label: t("Edit image URL"),
         },
       ],
     },
     {
       name: "deleteImage",
-      tooltip: dictionary.deleteImage,
+      tooltip: t("Delete image"),
       icon: <TrashIcon />,
     },
     {
@@ -127,14 +128,14 @@ export default function imageMenuItems(
     },
     {
       name: "linkOnImage",
-      tooltip: dictionary.createLink,
+      tooltip: t("Create link"),
       shortcut: `${metaDisplay}+K`,
       active: isMarkActive(schema.marks.link),
       icon: <LinkIcon />,
     },
     {
       name: "commentOnImage",
-      tooltip: dictionary.comment,
+      tooltip: t("Comment"),
       shortcut: `${metaDisplay}+⌥+M`,
       icon: <CommentIcon />,
     },

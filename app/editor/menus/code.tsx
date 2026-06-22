@@ -1,6 +1,6 @@
-import { CopyIcon, EditIcon, ExpandedIcon } from "outline-icons";
+import { CopyIcon, EditIcon, ExpandedIcon, TextWrapIcon } from "outline-icons";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import type { EditorState } from "prosemirror-state";
+import { NodeSelection } from "prosemirror-state";
 import {
   pluginKey as mermaidPluginKey,
   type MermaidState,
@@ -11,15 +11,22 @@ import {
   getLabelForLanguage,
 } from "@shared/editor/lib/code";
 import { isMermaid } from "@shared/editor/lib/isCode";
-import type { MenuItem } from "@shared/editor/types";
-import type { Dictionary } from "~/hooks/useDictionary";
+import { t } from "i18next";
+import type { MenuItem, SelectionContext } from "@shared/editor/types";
+import { metaDisplay } from "@shared/utils/keyboard";
 
-export default function codeMenuItems(
-  state: EditorState,
-  readOnly: boolean | undefined,
-  dictionary: Dictionary
-): MenuItem[] {
-  const node = state.selection.$from.node();
+/**
+ * Returns menu items for the code block selection toolbar.
+ *
+ * @param ctx - the current selection context.
+ * @returns an array of menu items.
+ */
+export default function codeMenuItems(ctx: SelectionContext): MenuItem[] {
+  const { state, readOnly } = ctx;
+  const node =
+    state.selection instanceof NodeSelection
+      ? state.selection.node
+      : state.selection.$from.node();
 
   const frequentLanguages = getFrequentCodeLanguages();
 
@@ -44,6 +51,9 @@ export default function codeMenuItems(
         ]
       : remainingLangMenuItems;
 
+  const isEditingMermaid = !!(mermaidPluginKey.getState(state) as MermaidState)
+    ?.editingId;
+
   return [
     {
       name: "copyToClipboard",
@@ -51,7 +61,7 @@ export default function codeMenuItems(
       label: readOnly
         ? getLabelForLanguage(node.attrs.language ?? "none")
         : undefined,
-      tooltip: dictionary.copy,
+      tooltip: t("Copy"),
     },
     {
       name: "separator",
@@ -59,11 +69,19 @@ export default function codeMenuItems(
     {
       name: "edit_mermaid",
       icon: <EditIcon />,
-      tooltip: dictionary.editDiagram,
-      visible:
-        !(mermaidPluginKey.getState(state) as MermaidState)?.editingId &&
-        isMermaid(node) &&
-        !readOnly,
+      tooltip: t("Edit diagram"),
+      shortcut: `${metaDisplay} Enter`,
+      visible: isMermaid(node) && !isEditingMermaid && !readOnly,
+    },
+    {
+      name: "separator",
+    },
+    {
+      name: "toggleCodeBlockWrap",
+      icon: <TextWrapIcon />,
+      tooltip: t("Wrap text"),
+      active: () => node.attrs.wrap,
+      visible: !readOnly && (!isMermaid(node) || isEditingMermaid),
     },
     {
       name: "separator",

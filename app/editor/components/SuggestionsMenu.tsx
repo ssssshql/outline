@@ -1,71 +1,43 @@
 import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
 import commandScore from "command-score";
-import capitalize from "lodash/capitalize";
-import orderBy from "lodash/orderBy";
+import { capitalize, orderBy } from "es-toolkit/compat";
 import { TextSelection } from "prosemirror-state";
+import type { EditorView } from "prosemirror-view";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import styled from "styled-components";
+import styled, { keyframes } from "styled-components";
 import insertFiles from "@shared/editor/commands/insertFiles";
 import { EmbedDescriptor } from "@shared/editor/embeds";
 import filterExcessSeparators from "@shared/editor/lib/filterExcessSeparators";
 import { findParentNode } from "@shared/editor/queries/findParentNode";
 import type { MenuItem } from "@shared/editor/types";
-import { depths, s } from "@shared/styles";
+import { s } from "@shared/styles";
 import { getEventFiles } from "@shared/utils/files";
 import { AttachmentValidation } from "@shared/validations";
-import { Portal } from "~/components/Portal";
 import {
   Drawer,
   DrawerContent,
   DrawerTitle,
 } from "~/components/primitives/Drawer";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "~/components/primitives/Popover";
+import { MouseSafeArea } from "~/components/MouseSafeArea";
 import Scrollable from "~/components/Scrollable";
-import useDictionary from "~/hooks/useDictionary";
 import useMobile from "~/hooks/useMobile";
 import Logger from "~/utils/Logger";
 import { useEditor } from "./EditorContext";
 import Input from "./Input";
 import { MenuHeader } from "~/components/primitives/components/Menu";
 
-type TopAnchor = {
-  top: number;
-  bottom: undefined;
-};
-
-type BottomAnchor = {
-  top: undefined;
-  bottom: number;
-};
-
-type LeftAnchor = {
-  left: number;
-  right: undefined;
-};
-
-type RightAnchor = {
-  left: undefined;
-  right: number;
-};
-
-type Position = ((TopAnchor | BottomAnchor) & (LeftAnchor | RightAnchor)) & {
-  isAbove: boolean;
-};
-
-const defaultPosition: Position = {
-  top: 0,
-  bottom: undefined,
-  left: -10000,
-  right: undefined,
-  isAbove: false,
-};
-
 export type Props<T extends MenuItem = MenuItem> = {
   rtl: boolean;
   isActive: boolean;
-  search: string;
-  trigger: string;
+  search?: string;
+  trigger: string | string[];
   uploadFile?: (file: File) => Promise<string>;
   onFileUploadStart?: () => void;
   onFileUploadStop?: () => void;
@@ -80,6 +52,7 @@ export type Props<T extends MenuItem = MenuItem> = {
     index: number,
     options: {
       selected: boolean;
+      disclosure?: boolean;
       onClick: (event: React.SyntheticEvent) => void;
     }
   ) => React.ReactNode;
@@ -87,30 +60,187 @@ export type Props<T extends MenuItem = MenuItem> = {
   items: T[];
 };
 
+/** Incrementing counter used to generate unique, stable ids per menu instance. */
+let menuInstanceCounter = 0;
+
+interface SubmenuState {
+  index: number;
+  items: MenuItem[];
+  selectedIndex: number;
+}
+
+interface UseSuggestionsMenuAriaProps {
+  view: EditorView;
+  isActive: boolean;
+  isMobile: boolean;
+  selectedIndex: number;
+  activeItem?: MenuItem | EmbedDescriptor;
+  submenu: SubmenuState | null;
+}
+
+function useSuggestionsMenuAria({
+  view,
+  isActive,
+  isMobile,
+  selectedIndex,
+  activeItem,
+  submenu,
+}: UseSuggestionsMenuAriaProps) {
+  // Stable ids for the WAI-ARIA editable-combobox-with-listbox pattern. The
+  // editor keeps real DOM focus while the active option is exposed virtually
+  // via aria-activedescendant (see effect below).
+  const instanceIdRef = React.useRef<number>();
+  if (instanceIdRef.current === undefined) {
+    instanceIdRef.current = menuInstanceCounter++;
+  }
+  const listboxId = `suggestions-menu-${instanceIdRef.current}`;
+  const submenuListboxId = `${listboxId}-submenu`;
+  const optionId = React.useCallback(
+    (index: number) => `${listboxId}-option-${index}`,
+    [listboxId]
+  );
+  const submenuOptionId = React.useCallback(
+    (index: number) => `${submenuListboxId}-option-${index}`,
+    [submenuListboxId]
+  );
+
+  // Expose the suggestion list to assistive technology using the editable
+  // combobox pattern: DOM focus stays in the editor while the active option is
+  // communicated via aria-activedescendant. aria-owns associates the portaled
+  // listbox with the editor so the referenced option ids resolve.
+  React.useEffect(() => {
+    const dom = view.dom;
+    const removeOwnedAttributes = () => {
+      const owns = dom.getAttribute("aria-owns");
+      if (!owns?.split(" ").includes(listboxId)) {
+        return;
+      }
+
+      dom.removeAttribute("aria-owns");
+      dom.removeAttribute("aria-controls");
+      dom.removeAttribute("aria-activedescendant");
+      dom.removeAttribute("aria-expanded");
+      dom.removeAttribute("aria-haspopup");
+      dom.removeAttribute("aria-autocomplete");
+      dom.setAttribute("role", "textbox");
+    };
+
+    if (!isActive || isMobile) {
+      removeOwnedAttributes();
+      return;
+    }
+
+    dom.setAttribute("role", "combobox");
+    dom.setAttribute("aria-expanded", "true");
+    dom.setAttribute("aria-haspopup", "listbox");
+    dom.setAttribute("aria-autocomplete", "list");
+
+    if (submenu) {
+      const owns = `${listboxId} ${submenuListboxId}`;
+      dom.setAttribute("aria-owns", owns);
+      dom.setAttribute("aria-controls", owns);
+      dom.setAttribute(
+        "aria-activedescendant",
+        submenuOptionId(submenu.selectedIndex)
+      );
+    } else {
+      dom.setAttribute("aria-owns", listboxId);
+      dom.setAttribute("aria-controls", listboxId);
+      if (activeItem && activeItem.name !== "separator") {
+        dom.setAttribute("aria-activedescendant", optionId(selectedIndex));
+      } else {
+        dom.removeAttribute("aria-activedescendant");
+      }
+    }
+
+    return () => {
+      removeOwnedAttributes();
+    };
+  }, [
+    activeItem,
+    isActive,
+    isMobile,
+    listboxId,
+    optionId,
+    selectedIndex,
+    submenu,
+    submenuListboxId,
+    submenuOptionId,
+    view,
+  ]);
+
+  return {
+    listboxId,
+    submenuListboxId,
+    optionId,
+    submenuOptionId,
+  };
+}
+
 function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
   const { view, commands, props: editorProps } = useEditor();
-  const dictionary = useDictionary();
   const { t } = useTranslation();
   const isMobile = useMobile();
-  const hasActivated = React.useRef(false);
   const pointerRef = React.useRef<{ clientX: number; clientY: number }>({
     clientX: 0,
     clientY: 0,
   });
-  const menuRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const selectionRef = React.useRef<{ from: number; to: number } | null>(null);
-  const [position, setPosition] = React.useState<Position>(defaultPosition);
   const [insertItem, setInsertItem] = React.useState<
     MenuItem | EmbedDescriptor
   >();
   const [selectedIndex, setSelectedIndex] = React.useState(0);
+  const [submenu, setSubmenu] = React.useState<SubmenuState | null>(null);
+  const itemRefs = React.useRef<Map<number, HTMLElement>>(new Map());
+  const submenuContentRef = React.useRef<HTMLDivElement>(null);
+  const hoverTimerRef = React.useRef<ReturnType<typeof setTimeout>>();
+
+  // Stores the caret bounding rect, snapshotted when the menu opens
+  const caretRectRef = React.useRef(new DOMRect());
+
+  // Stable virtual element for Radix PopoverAnchor – never replaced so the
+  // popper does not trigger unnecessary anchor-change cycles.
+  const caretRef = React.useRef({
+    getBoundingClientRect: () => caretRectRef.current,
+  });
+
+  // Compute and store the caret rect during render so it is available before
+  // the Radix popper effect runs for the first time.
+  const caretRect = React.useMemo(() => {
+    if (!props.isActive) {
+      return new DOMRect();
+    }
+
+    try {
+      const { selection } = view.state;
+      const fromPos = view.coordsAtPos(selection.from);
+      const toPos = view.coordsAtPos(selection.to, -1);
+      const top = Math.min(fromPos.top, toPos.top);
+      const bottom = Math.max(fromPos.bottom, toPos.bottom);
+      const left = Math.min(fromPos.left, toPos.left);
+      const right = Math.max(fromPos.right, toPos.right);
+      return new DOMRect(left, top, right - left, bottom - top);
+    } catch (err) {
+      Logger.warn("Unable to calculate caret position", { err });
+      return new DOMRect();
+    }
+  }, [props.isActive, view]);
+
+  caretRectRef.current = caretRect;
+
+  const resolveChildren = (
+    children: MenuItem["children"]
+  ): MenuItem[] | undefined =>
+    typeof children === "function" ? children() : children;
 
   React.useEffect(() => {
     if (props.isActive) {
-      hasActivated.current = true;
-      // Save the selection position when the menu opens. On mobile, the editor
-      // may lose focus/selection when tapping on menu items, so we restore it.
+      // Save the selection position when the menu opens and as the user types.
+      // On mobile, the editor may lose focus/selection when tapping on menu
+      // items, so we restore it. The position must stay current as the search
+      // text grows, otherwise the deletion range calculated in handleClearSearch
+      // will be wrong.
       requestAnimationFrame(() => {
         const { from, to } = view.state.selection;
         selectionRef.current = { from, to };
@@ -119,93 +249,37 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
       selectionRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.isActive, props.search]);
+
+  React.useEffect(() => {
+    setSubmenu(null);
+
+    if (!props.isActive) {
+      return;
+    }
+
+    setSelectedIndex(0);
+    setInsertItem(undefined);
   }, [props.isActive]);
 
-  const calculatePosition = React.useCallback(
-    (props: Props) => {
-      if (!props.isActive) {
-        return defaultPosition;
-      }
-
-      const caretPosition = () => {
-        let fromPos;
-        let toPos;
-        try {
-          fromPos = view.coordsAtPos(selection.from);
-          toPos = view.coordsAtPos(selection.to, -1);
-        } catch (err) {
-          Logger.warn("Unable to calculate caret position", err);
-          return {
-            top: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-          };
-        }
-
-        // ensure that start < end for the menu to be positioned correctly
-        return {
-          top: Math.min(fromPos.top, toPos.top),
-          bottom: Math.max(fromPos.bottom, toPos.bottom),
-          left: Math.min(fromPos.left, toPos.left),
-          right: Math.max(fromPos.right, toPos.right),
-        };
-      };
-
-      const { selection } = view.state;
-      const ref = menuRef.current;
-      const offsetWidth = ref ? ref.offsetWidth : 0;
-      const offsetHeight = ref ? ref.offsetHeight : 0;
-      const { top, bottom, right, left } = caretPosition();
-      const margin = 12;
-
-      const offsetParent = ref?.offsetParent
-        ? ref.offsetParent.getBoundingClientRect()
-        : ({
-            width: 0,
-            height: 0,
-            top: 0,
-            left: 0,
-          } as DOMRect);
-
-      let leftPos = Math.min(
-        left - offsetParent.left,
-        window.innerWidth - offsetParent.left - offsetWidth - margin
-      );
-      if (props.rtl) {
-        leftPos = right - offsetWidth;
-      }
-
-      if (top - offsetHeight > margin) {
-        return {
-          left: leftPos,
-          top: undefined,
-          bottom: offsetParent.bottom - top,
-          right: undefined,
-          isAbove: false,
-        };
-      } else {
-        return {
-          left: leftPos,
-          top: bottom - offsetParent.top,
-          bottom: undefined,
-          right: undefined,
-          isAbove: true,
-        };
-      }
-    },
-    [view]
-  );
+  React.useEffect(() => {
+    setSelectedIndex(0);
+    setSubmenu(null);
+  }, [props.search]);
 
   const handleClearSearch = React.useCallback(() => {
     const { state, dispatch } = view;
     const selection =
       isMobile && selectionRef.current ? selectionRef.current : state.selection;
+    const triggers = Array.isArray(props.trigger)
+      ? props.trigger
+      : [props.trigger];
+    const triggerLength = triggers[0].length;
     const poss = state.doc.cut(
-      selection.from - (props.search ?? "").length - props.trigger.length,
+      selection.from - (props.search ?? "").length - triggerLength,
       selection.from
     );
-    const trimTrigger = poss.textContent.startsWith(props.trigger);
+    const trimTrigger = triggers.some((t) => poss.textContent.startsWith(t));
 
     if (!props.search && !trimTrigger) {
       return;
@@ -219,32 +293,12 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
           0,
           selection.from -
             (props.search ?? "").length -
-            (trimTrigger ? props.trigger.length : 0)
+            (trimTrigger ? triggerLength : 0)
         ),
         selection.to
       )
     );
-  }, [props.search, props.trigger, view]);
-
-  React.useEffect(() => {
-    if (!props.isActive) {
-      return;
-    }
-
-    // reset scroll position to top when opening menu as the contents are
-    // hidden, not unrendered
-    if (menuRef.current) {
-      menuRef.current.scroll({ top: 0 });
-    }
-
-    setPosition(calculatePosition(props));
-    setSelectedIndex(0);
-    setInsertItem(undefined);
-  }, [calculatePosition, props.isActive]);
-
-  React.useEffect(() => {
-    setSelectedIndex(0);
-  }, [props.search]);
+  }, [props.search, props.trigger, view, isMobile]);
 
   const restoreSelection = React.useCallback(() => {
     if (!isMobile) {
@@ -274,7 +328,9 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
         typeof item.attrs === "function" ? item.attrs(view.state) : item.attrs;
 
       if (item.name === "noop") {
-        // Do nothing
+        if ("onClick" in item) {
+          item.onClick?.();
+        }
       } else if (command) {
         command(attrs);
       } else {
@@ -304,10 +360,13 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
             ...item,
             name: "mention",
           });
-          void editorProps.onCreateLink?.({
-            title: item.attrs.label,
-            id: item.attrs.modelId,
-          });
+          void editorProps.onCreateLink?.(
+            {
+              title: item.attrs.label,
+              id: item.attrs.modelId,
+            },
+            !!item.attrs.nested
+          );
           return;
         case "image":
           return triggerFilePick(
@@ -353,7 +412,7 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
       const matches = "matcher" in insertItem && insertItem.matcher(href);
 
       if (!matches) {
-        toast.error(dictionary.embedInvalidLink);
+        toast.error(t("Sorry, that link won’t work for this embed type"));
         return;
       }
 
@@ -397,13 +456,13 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
     }
   };
 
-  const triggerFilePick = (accept: string, attrs?: Record<string, any>) => {
+  const triggerFilePick = (accept: string, attrs?: Record<string, unknown>) => {
     if (inputRef.current) {
       if (accept) {
         inputRef.current.accept = accept;
       }
       if (attrs) {
-        inputRef.current.dataset.attrs = attrs ? JSON.stringify(attrs) : "";
+        inputRef.current.dataset.attrs = JSON.stringify(attrs);
       }
       inputRef.current.click();
     }
@@ -442,7 +501,6 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
         onFileUploadStart,
         onFileUploadStop,
         onFileUploadProgress,
-        dictionary,
         isAttachment: inputRef.current?.accept === "*",
         attrs,
       });
@@ -461,12 +519,9 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
     const embedItems: EmbedDescriptor[] = [];
 
     for (const embed of embeds) {
-      if (embed.title && embed.visible !== false) {
+      if (embed.title && embed.visible !== false && !embed.disabled) {
         embedItems.push(
-          new EmbedDescriptor({
-            ...embed,
-            name: "embed",
-          })
+          new EmbedDescriptor(Object.assign({}, embed, { name: "embed" }))
         );
       }
     }
@@ -481,9 +536,45 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
     }
 
     const searchInput = search.toLowerCase();
+
+    const matchesSearch = (item: MenuItem | EmbedDescriptor) =>
+      (item.name || "").toLocaleLowerCase().includes(searchInput) ||
+      (item.title || "").toLocaleLowerCase().includes(searchInput) ||
+      (item.keywords || "").toLocaleLowerCase().includes(searchInput);
+
+    // When searching, flatten matching children into the top-level list so
+    // they are directly navigable with the keyboard. If all children match,
+    // exclude the parent item since it would be redundant.
+    const fullyFlattenedParents = new Set<MenuItem | EmbedDescriptor>();
+    if (search && filterable) {
+      const flattened: (EmbedDescriptor | MenuItem)[] = [];
+      for (const item of items) {
+        if ("children" in item && item.children) {
+          const children = resolveChildren(item.children);
+          if (children) {
+            const matching = children.filter(matchesSearch);
+            if (matching.length > 0) {
+              for (const child of matching) {
+                const { children: _, ...flat } = child;
+                flattened.push(flat);
+              }
+              if (matching.length === children.length) {
+                fullyFlattenedParents.add(item);
+              }
+            }
+          }
+        }
+      }
+      items = items.concat(flattened);
+    }
+
     const filtered = items.filter((item) => {
       if (item.name === "separator") {
         return true;
+      }
+
+      if (fullyFlattenedParents.has(item)) {
+        return false;
       }
 
       if (item.visible === false) {
@@ -514,11 +605,7 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
         return item;
       }
 
-      return (
-        (item.name || "").toLocaleLowerCase().includes(searchInput) ||
-        (item.title || "").toLocaleLowerCase().includes(searchInput) ||
-        (item.keywords || "").toLocaleLowerCase().includes(searchInput)
-      );
+      return matchesSearch(item);
     });
 
     return filterExcessSeparators(
@@ -541,18 +628,40 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
     );
   }, [commands, props]);
 
-  React.useEffect(() => {
-    const handleMouseDown = (event: MouseEvent) => {
-      if (
-        !menuRef.current ||
-        menuRef.current.contains(event.target as Element)
-      ) {
+  const openSubmenu = React.useCallback(
+    (index: number) => {
+      const item = filtered[index];
+      if (!item) {
+        return;
+      }
+      const children = resolveChildren(
+        "children" in item ? item.children : undefined
+      );
+      if (!children?.length) {
         return;
       }
 
-      props.onClose();
-    };
+      const normalized = filterExcessSeparators(
+        children.filter((child) => child.visible !== false)
+      );
+      const firstSelectable = normalized.findIndex(
+        (child) =>
+          child.name !== "separator" && !("disabled" in child && child.disabled)
+      );
+      if (firstSelectable === -1) {
+        return;
+      }
 
+      setSubmenu({
+        index,
+        items: normalized,
+        selectedIndex: firstSelectable,
+      });
+    },
+    [filtered]
+  );
+
+  React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) {
         return;
@@ -561,15 +670,106 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
         return;
       }
 
+      // Let the link input's own handlers manage navigation keys
+      if (insertItem) {
+        return;
+      }
+
+      // --- Submenu open: route keys into it ---
+      if (submenu) {
+        if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
+          event.preventDefault();
+          event.stopPropagation();
+          const total = submenu.items.length - 1;
+          let next = submenu.selectedIndex + 1;
+          while (next <= total) {
+            const child = submenu.items[next];
+            if (
+              child?.name !== "separator" &&
+              !("disabled" in child && child.disabled)
+            ) {
+              break;
+            }
+            next++;
+          }
+          if (next <= total) {
+            setSubmenu((s) => (s ? { ...s, selectedIndex: next } : s));
+          }
+          return;
+        }
+
+        if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
+          event.preventDefault();
+          event.stopPropagation();
+          let prev = submenu.selectedIndex - 1;
+          while (prev >= 0) {
+            const child = submenu.items[prev];
+            if (
+              child?.name !== "separator" &&
+              !("disabled" in child && child.disabled)
+            ) {
+              break;
+            }
+            prev--;
+          }
+          if (prev >= 0) {
+            setSubmenu((s) => (s ? { ...s, selectedIndex: prev } : s));
+          }
+          return;
+        }
+
+        if (event.key === "ArrowLeft" || event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          setSubmenu(null);
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          const child = submenu.items[submenu.selectedIndex];
+          if (child) {
+            handleClickItem(child);
+            setSubmenu(null);
+          }
+          return;
+        }
+        return;
+      }
+
+      // --- Normal (no submenu) ---
       if (event.key === "Enter") {
         event.preventDefault();
 
         const item = filtered[selectedIndex];
 
         if (item) {
-          handleClickItem(item);
+          const children = resolveChildren(
+            "children" in item ? item.children : undefined
+          );
+          if (children?.length) {
+            openSubmenu(selectedIndex);
+          } else {
+            handleClickItem(item);
+          }
         } else {
           props.onClose(true);
+        }
+      }
+
+      if (event.key === "ArrowRight") {
+        const item = filtered[selectedIndex];
+        if (item) {
+          const children = resolveChildren(
+            "children" in item ? item.children : undefined
+          );
+          if (children?.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            openSubmenu(selectedIndex);
+            return;
+          }
         }
       }
 
@@ -636,21 +836,37 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
       }
     };
 
-    window.addEventListener("mousedown", handleMouseDown);
     window.addEventListener("keydown", handleKeyDown, {
       capture: true,
     });
 
     return () => {
-      window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("keydown", handleKeyDown, {
         capture: true,
       });
     };
-  }, [close, filtered, handleClickItem, props, selectedIndex]);
+  }, [
+    close,
+    filtered,
+    handleClickItem,
+    insertItem,
+    openSubmenu,
+    props,
+    selectedIndex,
+    submenu,
+  ]);
 
   const { isActive, uploadFile } = props;
   const items = filtered;
+  const { listboxId, submenuListboxId, optionId, submenuOptionId } =
+    useSuggestionsMenuAria({
+      view,
+      isActive,
+      isMobile,
+      selectedIndex,
+      activeItem: filtered[selectedIndex],
+      submenu,
+    });
 
   const handleOpenChange = React.useCallback(
     (open: boolean) => {
@@ -664,7 +880,7 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
   const fileInput = uploadFile && (
     <VisuallyHidden.Root>
       <label>
-        <Trans>Import document</Trans>
+        <Trans>Upload file</Trans>
         <input
           type="file"
           ref={inputRef}
@@ -675,6 +891,23 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
     </VisuallyHidden.Root>
   );
 
+  // Close submenu when parent selection moves away from the trigger
+  React.useEffect(() => {
+    if (submenu && submenu.index !== selectedIndex) {
+      setSubmenu(null);
+    }
+  }, [selectedIndex, submenu]);
+
+  // Cleanup hover timer on unmount
+  React.useEffect(
+    () => () => {
+      if (hoverTimerRef.current) {
+        clearTimeout(hoverTimerRef.current);
+      }
+    },
+    []
+  );
+
   const renderItems = () => {
     let prevHeading: string | undefined;
 
@@ -683,7 +916,7 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
         {items.map((item, index) => {
           if (item.name === "separator") {
             return (
-              <ListItem key={index}>
+              <ListItem key={index} role="presentation">
                 <hr />
               </ListItem>
             );
@@ -692,6 +925,10 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
           if (!item.title) {
             return null;
           }
+
+          const hasChildren = !!(
+            "children" in item && resolveChildren(item.children)?.length
+          );
 
           const handlePointerMove = (ev: React.PointerEvent) => {
             if (
@@ -708,6 +945,22 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
               clientX: ev.clientX,
               clientY: ev.clientY,
             };
+
+            // Hover to open submenu with delay
+            if (hasChildren) {
+              if (hoverTimerRef.current) {
+                clearTimeout(hoverTimerRef.current);
+              }
+              hoverTimerRef.current = setTimeout(() => {
+                openSubmenu(index);
+              }, 150);
+            } else {
+              // Close submenu when hovering a regular item
+              if (hoverTimerRef.current) {
+                clearTimeout(hoverTimerRef.current);
+              }
+              setSubmenu(null);
+            }
           };
 
           const handlePointerDown = () => {
@@ -722,23 +975,45 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
           const handleOnClick = (ev: React.MouseEvent) => {
             ev.preventDefault();
             ev.stopPropagation();
-            handleClickItem(item);
+            if (hasChildren) {
+              openSubmenu(index);
+            } else {
+              handleClickItem(item);
+            }
           };
 
           const currentHeading =
             "section" in item ? item.section?.({ t }) : undefined;
 
+          const itemRef = (node: HTMLElement | null) => {
+            if (node) {
+              itemRefs.current.set(index, node);
+            } else {
+              itemRefs.current.delete(index);
+            }
+          };
+
           const response = (
             <React.Fragment key={`${index}-${item.name}`}>
               {currentHeading !== prevHeading && (
-                <MenuHeader key={currentHeading}>{currentHeading}</MenuHeader>
+                <MenuHeader key={currentHeading} role="presentation">
+                  {currentHeading}
+                </MenuHeader>
               )}
               <ListItem
+                ref={itemRef}
+                role="option"
+                id={optionId(index)}
+                aria-selected={index === selectedIndex}
+                aria-disabled={
+                  ("disabled" in item && item.disabled) || undefined
+                }
                 onPointerMove={handlePointerMove}
                 onPointerDown={handlePointerDown}
               >
-                {props.renderMenuItem(item as any, index, {
+                {props.renderMenuItem(item as unknown as T, index, {
                   selected: index === selectedIndex,
+                  disclosure: hasChildren,
                   onClick: handleOnClick,
                 })}
               </ListItem>
@@ -749,8 +1024,8 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
           return response;
         })}
         {items.length === 0 && (
-          <ListItem>
-            <Empty>{dictionary.noResults}</Empty>
+          <ListItem role="presentation">
+            <Empty>{t("No results")}</Empty>
           </ListItem>
         )}
       </>
@@ -762,7 +1037,9 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
       <>
         <Drawer open={isActive} onOpenChange={handleOpenChange}>
           <DrawerContent aria-describedby={undefined}>
-            <DrawerTitle hidden>{props.trigger}</DrawerTitle>
+            <DrawerTitle hidden>
+              {Array.isArray(props.trigger) ? props.trigger[0] : props.trigger}
+            </DrawerTitle>
             <MobileScrollable hiddenScrollbars>
               {insertItem ? (
                 <LinkInputWrapper>
@@ -772,8 +1049,10 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
                       "placeholder" in insertItem && !!insertItem.placeholder
                         ? insertItem.placeholder
                         : insertItem.title
-                          ? dictionary.pasteLinkWithTitle(insertItem.title)
-                          : dictionary.pasteLink
+                          ? t("Paste a {{service}} link…", {
+                              service: insertItem.title,
+                            })
+                          : `${t("Paste a link")}…`
                     }
                     onKeyDown={handleLinkInputKeydown}
                     onPaste={handleLinkInputPaste}
@@ -781,7 +1060,13 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
                   />
                 </LinkInputWrapper>
               ) : (
-                <List>{renderItems()}</List>
+                <List
+                  role="listbox"
+                  id={listboxId}
+                  aria-label={t("Suggestions")}
+                >
+                  {renderItems()}
+                </List>
               )}
             </MobileScrollable>
           </DrawerContent>
@@ -792,36 +1077,159 @@ function SuggestionsMenu<T extends MenuItem>(props: Props<T>) {
   }
 
   return (
-    <Portal>
-      <Wrapper active={isActive} ref={menuRef} hiddenScrollbars {...position}>
-        {(isActive || hasActivated.current) && (
-          <>
-            {insertItem ? (
-              <LinkInputWrapper>
-                <LinkInput
-                  type="text"
-                  placeholder={
-                    "placeholder" in insertItem && !!insertItem.placeholder
-                      ? insertItem.placeholder
-                      : insertItem.title
-                        ? dictionary.pasteLinkWithTitle(insertItem.title)
-                        : dictionary.pasteLink
+    <>
+      <Popover open={isActive} onOpenChange={handleOpenChange} modal={false}>
+        <PopoverAnchor virtualRef={caretRef} />
+        <BouncyPopoverContent
+          side="bottom"
+          align="start"
+          width={280}
+          shrink
+          style={{
+            padding: 0,
+            maxHeight:
+              "min(324px, var(--radix-popover-content-available-height))",
+          }}
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onInteractOutside={(e) => {
+            if (submenuContentRef.current?.contains(e.target as Node)) {
+              e.preventDefault();
+            }
+          }}
+        >
+          {insertItem ? (
+            <LinkInputWrapper>
+              <LinkInput
+                type="text"
+                placeholder={
+                  "placeholder" in insertItem && !!insertItem.placeholder
+                    ? insertItem.placeholder
+                    : insertItem.title
+                      ? t("Paste a {{service}} link…", {
+                          service: insertItem.title,
+                        })
+                      : `${t("Paste a link")}…`
+                }
+                onKeyDown={handleLinkInputKeydown}
+                onPaste={handleLinkInputPaste}
+                autoFocus
+              />
+            </LinkInputWrapper>
+          ) : (
+            <List role="listbox" id={listboxId} aria-label={t("Suggestions")}>
+              {renderItems()}
+            </List>
+          )}
+        </BouncyPopoverContent>
+      </Popover>
+      {fileInput}
+      {submenu && itemRefs.current.get(submenu.index) && (
+        <Popover open modal={false}>
+          <PopoverAnchor
+            virtualRef={{
+              current: {
+                getBoundingClientRect: () =>
+                  itemRefs.current.get(submenu.index)!.getBoundingClientRect(),
+              },
+            }}
+          />
+          <SubmenuPopoverContent
+            ref={submenuContentRef}
+            side="right"
+            align="start"
+            sideOffset={0}
+            width={220}
+            shrink
+            style={{ padding: 0 }}
+            onOpenAutoFocus={(e) => e.preventDefault()}
+            onCloseAutoFocus={(e) => e.preventDefault()}
+            onPointerLeave={() => setSubmenu(null)}
+          >
+            <MouseSafeArea parentRef={submenuContentRef} />
+            <List
+              role="listbox"
+              id={submenuListboxId}
+              aria-label={t("Suggestions")}
+            >
+              {submenu.items.map((child, childIndex) => {
+                if (child.name === "separator") {
+                  return (
+                    <ListItem key={childIndex} role="presentation">
+                      <hr />
+                    </ListItem>
+                  );
+                }
+                if (!child.title) {
+                  return null;
+                }
+
+                const handleChildPointerMove = (ev: React.PointerEvent) => {
+                  if (
+                    submenu.selectedIndex !== childIndex &&
+                    (pointerRef.current.clientX !== ev.clientX ||
+                      pointerRef.current.clientY !== ev.clientY)
+                  ) {
+                    setSubmenu((s) =>
+                      s ? { ...s, selectedIndex: childIndex } : s
+                    );
                   }
-                  onKeyDown={handleLinkInputKeydown}
-                  onPaste={handleLinkInputPaste}
-                  autoFocus
-                />
-              </LinkInputWrapper>
-            ) : (
-              <List>{renderItems()}</List>
-            )}
-            {fileInput}
-          </>
-        )}
-      </Wrapper>
-    </Portal>
+                  pointerRef.current = {
+                    clientX: ev.clientX,
+                    clientY: ev.clientY,
+                  };
+                };
+
+                const handleChildClick = (ev: React.MouseEvent) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  handleClickItem(child);
+                  setSubmenu(null);
+                };
+
+                return (
+                  <ListItem
+                    key={`sub-${childIndex}-${child.name}`}
+                    role="option"
+                    id={submenuOptionId(childIndex)}
+                    aria-selected={childIndex === submenu.selectedIndex}
+                    aria-disabled={
+                      ("disabled" in child && child.disabled) || undefined
+                    }
+                    onPointerMove={handleChildPointerMove}
+                  >
+                    {props.renderMenuItem(child as unknown as T, childIndex, {
+                      selected: childIndex === submenu.selectedIndex,
+                      onClick: handleChildClick,
+                    })}
+                  </ListItem>
+                );
+              })}
+            </List>
+          </SubmenuPopoverContent>
+        </Popover>
+      )}
+    </>
   );
 }
+
+const bouncyFadeIn = keyframes`
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+`;
+
+const BouncyPopoverContent = styled(PopoverContent)`
+  &[data-state="open"] {
+    animation: ${bouncyFadeIn} 150ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+`;
+
+const SubmenuPopoverContent = styled(PopoverContent)`
+  max-height: min(324px, var(--radix-popover-content-available-height));
+`;
 
 const LinkInputWrapper = styled.div`
   margin: 8px;
@@ -839,6 +1247,13 @@ const List = styled.ol`
   height: 100%;
   padding: 6px;
   margin: 0;
+  white-space: nowrap;
+
+  hr {
+    border: 0;
+    height: 0;
+    border-top: 1px solid ${s("divider")};
+  }
 `;
 
 const ListItem = styled.li`
@@ -858,63 +1273,6 @@ const Empty = styled.div`
 
 const MobileScrollable = styled(Scrollable)`
   max-height: 75vh;
-`;
-
-export const Wrapper = styled(Scrollable)<{
-  active: boolean;
-  top?: number;
-  bottom?: number;
-  left?: number;
-  isAbove: boolean;
-}>`
-  color: ${s("textSecondary")};
-  font-family: ${s("fontFamily")};
-  position: absolute;
-  z-index: ${depths.editorToolbar};
-  ${(props) => props.top !== undefined && `top: ${props.top}px`};
-  ${(props) => props.bottom !== undefined && `bottom: ${props.bottom}px`};
-  left: ${(props) => props.left}px;
-  background: ${s("menuBackground")};
-  border-radius: 6px;
-  box-shadow:
-    rgba(0, 0, 0, 0.05) 0px 0px 0px 1px,
-    rgba(0, 0, 0, 0.08) 0px 4px 8px,
-    rgba(0, 0, 0, 0.08) 0px 2px 4px;
-  opacity: 0;
-  transform: scale(0.95);
-  transition:
-    opacity 150ms cubic-bezier(0.175, 0.885, 0.32, 1.275),
-    transform 150ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  transition-delay: 150ms;
-  line-height: 0;
-  box-sizing: border-box;
-  pointer-events: none;
-  white-space: nowrap;
-  width: 280px;
-  height: auto;
-  max-height: 324px;
-
-  * {
-    box-sizing: border-box;
-  }
-
-  hr {
-    border: 0;
-    height: 0;
-    border-top: 1px solid ${s("divider")};
-  }
-
-  ${({ active, isAbove }) =>
-    active &&
-    `
-    transform: translateY(${isAbove ? "6px" : "-6px"}) scale(1);
-    pointer-events: all;
-    opacity: 1;
-  `};
-
-  @media print {
-    display: none;
-  }
 `;
 
 export default SuggestionsMenu;

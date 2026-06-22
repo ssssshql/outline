@@ -31,7 +31,8 @@ import useMobile from "~/hooks/useMobile";
 function Comments() {
   const { ui, comments, documents } = useStores();
   const user = useCurrentUser();
-  const { editor, isEditorInitialized } = useDocumentContext();
+  const { editor, isEditorInitialized, setFocusedCommentId } =
+    useDocumentContext();
   const { t } = useTranslation();
   const match = useRouteMatch<{ documentSlug: string }>();
   const document = documents.get(match.params.documentSlug);
@@ -48,7 +49,7 @@ function Comments() {
   const isAtBottom = useRef(true);
   const [showJumpToRecentBtn, setShowJumpToRecentBtn] = useState(false);
 
-  useKeyDown("Escape", () => document && ui.set({ commentsExpanded: false }));
+  useKeyDown("Escape", () => document && ui.set({ rightSidebar: null }));
 
   // Account for the resolved status of the comment changing
   useEffect(() => {
@@ -179,7 +180,6 @@ function Comments() {
               documentId={document.id}
               placeholder={`${t("Add a comment")}…`}
               autoFocus={false}
-              dir={document.dir}
               animatePresence
               standalone
             />
@@ -203,7 +203,10 @@ function Comments() {
           />
         </Flex>
       }
-      onClose={() => ui.set({ commentsExpanded: false })}
+      onClose={() => {
+        ui.set({ rightSidebar: null });
+        setFocusedCommentId(null);
+      }}
       scrollable={false}
     >
       {content}
@@ -241,10 +244,10 @@ const JumpToRecent = styled(ButtonSmall)`
   }
 `;
 
-const NewCommentForm = styled(CommentForm)<{ dir?: "ltr" | "rtl" }>`
+const NewCommentForm = styled(CommentForm)`
   padding: 12px;
-  padding-right: ${(props) => (props.dir !== "rtl" ? "18px" : "12px")};
-  padding-left: ${(props) => (props.dir === "rtl" ? "18px" : "12px")};
+  padding-inline-end: 18px;
+  padding-inline-start: 12px;
 `;
 
 export default observer(Comments);

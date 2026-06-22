@@ -9,7 +9,7 @@ There is a web client which is fully responsive and works on mobile devices.
 - **`shared/`** - Shared TypeScript types, utilities, and editor components
 - **`plugins/`** - Plugin system for extending functionality
 - **`public/`** - Static assets served directly
-- **Various config files** - TypeScript, Vite, Jest, Prettier, Oxlint configurations
+- **Various config files** - TypeScript, Vite, Vitest, Prettier, Oxlint configurations
 
 Refer to /docs/ARCHITECTURE.md for detailed architecture documentation.
 
@@ -46,6 +46,18 @@ You're an expert in the following areas:
 yarn install
 ```
 
+- When adding a `resolutions` entry to address a security advisory in a transitive dependency, target only the specific vulnerable descriptors using the `name@npm:<range>` syntax rather than overriding the package globally. Inspect `yarn.lock` to find the exact ranges requested by upstream packages and add one entry per vulnerable range, e.g.:
+
+```json
+"resolutions": {
+  "qs@npm:^6.5.2": "^6.14.2",
+  "qs@npm:^6.11.0": "^6.14.2",
+  "qs@npm:^6.14.0": "^6.14.2"
+}
+```
+
+This keeps overrides scoped to the affected dependents and avoids forcing unrelated consumers onto an incompatible version.
+
 ## TypeScript Usage
 
 - Use strict mode.
@@ -70,7 +82,7 @@ yarn install
 ### Exports
 
 - Exported members must appear at the top of the file.
-- Prefer named exports for components & classes.
+- Always use named exports for new components & classes.
 - Document ALL public/exported functions with JSDoc.
 
 ## React Usage
@@ -140,7 +152,7 @@ yarn sequelize migration:create --name=add-field-to-table
 
 ## Testing
 
-- Run tests with Jest:
+- Run tests with Vitest:
 
 ```bash
 # Run a specific test file (preferred)
@@ -188,6 +200,7 @@ yarn test:shared   # All shared code tests
 ## Security
 
 - Sanitize all user input.
+- Always use `sanitizeUrl()` when setting `href` or `src` from user-controlled data in ProseMirror `toDOM` methods, regardless of whether it is imported via an alias or a relative path. Unlike React components, `toDOM` writes raw DOM and does not sanitize attribute values.
 - Use CSRF protection.
 - Use rateLimiter middleware for sensitive endpoints.
 - Follow OWASP guidelines.

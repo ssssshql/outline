@@ -3,6 +3,8 @@ import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useHistory } from "react-router-dom";
 import { toast } from "sonner";
+import { errToString } from "@shared/utils/error";
+import { useSidebarContext } from "~/components/Sidebar/components/SidebarContext";
 import useStores from "~/hooks/useStores";
 import { documentPath } from "~/utils/routeHelpers";
 
@@ -16,6 +18,7 @@ export default function useImportDocument(
   isImporting: boolean;
 } {
   const { documents } = useStores();
+  const sidebarContext = useSidebarContext();
   const [isImporting, setImporting] = useState(false);
   const { t } = useTranslation();
   const history = useHistory();
@@ -45,26 +48,33 @@ export default function useImportDocument(
         }
 
         for (const file of files) {
+          const toastId = toast.loading(`${t("Uploading")}…`);
+
           try {
             const doc = await documents.import(file, documentId, cId, {
               publish: true,
             });
 
             if (redirect) {
-              history.push(documentPath(doc));
+              history.push({
+                pathname: documentPath(doc),
+                state: { sidebarContext },
+              });
             }
           } catch (err) {
-            toast.error(err.message);
+            toast.error(errToString(err));
+          } finally {
+            toast.dismiss(toastId);
           }
         }
       } catch (err) {
-        toast.error(`${t("Could not import file")}. ${err.message}`);
+        toast.error(`${t("Could not import file")}. ${errToString(err)}`);
       } finally {
         setImporting(false);
         importingLock = false;
       }
     },
-    [t, documents, history, collectionId, documentId]
+    [t, documents, history, collectionId, sidebarContext, documentId]
   );
 
   return {

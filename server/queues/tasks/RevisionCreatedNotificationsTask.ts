@@ -1,12 +1,16 @@
 import { subHours } from "date-fns";
-import differenceBy from "lodash/differenceBy";
+import { differenceBy } from "es-toolkit/compat";
 import { Op } from "sequelize";
 import { MentionType, NotificationEventType } from "@shared/types";
-import { createSubscriptionsForDocument } from "@server/commands/subscriptionCreator";
+import {
+  createSubscriptionsForDocument,
+  subscribeUsersToDocument,
+} from "@server/commands/subscriptionCreator";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
 import {
   Document,
+  Group,
   Revision,
   Notification,
   User,
@@ -34,16 +38,8 @@ export default class RevisionCreatedNotificationsTask extends BaseTask<RevisionE
 
     const before = await revision.before();
 
-    // If the content looks the same, don't send notifications
-    if (!DocumentHelper.isChangeOverThreshold(before, revision, 5)) {
-      Logger.info(
-        "processor",
-        `suppressing notifications as update has insignificant changes`
-      );
-      return;
-    }
-
-    // Send notifications to mentioned users first
+    // Send notifications to mentioned users first – these must be processed
+    // regardless of the change threshold as even a small edit can add a mention.
     const oldMentions = before
       ? [...DocumentHelper.parseMentions(before, { type: MentionType.User })]
       : [];
@@ -54,21 +50,31 @@ export default class RevisionCreatedNotificationsTask extends BaseTask<RevisionE
     ];
 
     const mentions = differenceBy(newMentions, oldMentions, "id");
+    const userIdsProcessed = new Set<string>();
     const userIdsMentioned: string[] = [];
+    const usersToSubscribe: User[] = [];
     for (const mention of mentions) {
-      if (userIdsMentioned.includes(mention.modelId)) {
+      if (userIdsProcessed.has(mention.modelId)) {
         continue;
       }
+      userIdsProcessed.add(mention.modelId);
 
       const recipient = await User.findByPk(mention.modelId);
 
       if (
-        recipient &&
-        recipient.id !== mention.actorId &&
+        !recipient ||
+        recipient.id === mention.actorId ||
+        !(await canUserAccessDocument(recipient, document.id))
+      ) {
+        continue;
+      }
+
+      usersToSubscribe.push(recipient);
+
+      if (
         recipient.subscribedToEventType(
           NotificationEventType.MentionedInDocument
-        ) &&
-        (await canUserAccessDocument(recipient, document.id))
+        )
       ) {
         await Notification.create({
           event: NotificationEventType.MentionedInDocument,
@@ -83,7 +89,9 @@ export default class RevisionCreatedNotificationsTask extends BaseTask<RevisionE
       }
     }
 
-    // send notifications to users in mentioned groups
+    await subscribeUsersToDocument(usersToSubscribe, document, event);
+
+    // Send notifications to users in mentioned groups
     const oldGroupMentions = before
       ? DocumentHelper.parseMentions(before, { type: MentionType.Group })
       : [];
@@ -101,6 +109,13 @@ export default class RevisionCreatedNotificationsTask extends BaseTask<RevisionE
       if (mentionedGroup.includes(group.modelId)) {
         continue;
       }
+
+      // Check if the group has mentions disabled
+      const groupModel = await Group.findByPk(group.modelId);
+      if (groupModel?.disableMentions) {
+        continue;
+      }
+
       const usersFromMentionedGroup = await GroupUser.findAll({
         where: {
           groupId: group.modelId,
@@ -138,6 +153,16 @@ export default class RevisionCreatedNotificationsTask extends BaseTask<RevisionE
       }
 
       mentionedGroup.push(group.modelId);
+    }
+
+    // If the content change is insignificant, don't send generic update
+    // notifications (mention notifications above are still sent).
+    if (!DocumentHelper.isChangeOverThreshold(before, revision, 5)) {
+      Logger.info(
+        "processor",
+        `suppressing update notifications as change has insignificant edits`
+      );
+      return;
     }
 
     const recipients = (

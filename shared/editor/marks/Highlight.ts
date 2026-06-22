@@ -1,7 +1,7 @@
 import { isHexColor } from "class-validator";
 import { parseToRgb, rgba } from "polished";
-import { toggleMark } from "prosemirror-commands";
 import type { MarkSpec, MarkType } from "prosemirror-model";
+import { toggleMark } from "../commands/toggleMark";
 import { markInputRuleForPattern } from "../lib/markInputRule";
 import markRule from "../rules/mark";
 import Mark from "./Mark";
@@ -77,8 +77,12 @@ export default class Highlight extends Mark {
           },
         },
         {
-          style: "background-color",
-          getAttrs: (style: string) => {
+          tag: "span[style]",
+          getAttrs: (dom) => {
+            const style = dom.style.backgroundColor;
+            if (!style) {
+              return false;
+            }
             const matchedColor = Highlight.findMatchingPresetColor(style);
             // Only apply highlight if we found a matching preset color
             // or if the color is clearly a highlight (not white/transparent)

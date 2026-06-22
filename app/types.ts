@@ -8,12 +8,14 @@ import type {
 } from "@shared/types";
 import type RootStore from "~/stores/RootStore";
 import type { SidebarContextType } from "./components/Sidebar/components/SidebarContext";
+import type Model from "./models/base/Model";
 import type Document from "./models/Document";
 import type FileOperation from "./models/FileOperation";
 import type Pin from "./models/Pin";
 import type Star from "./models/Star";
 import type User from "./models/User";
 import type UserMembership from "./models/UserMembership";
+import type Policy from "./models/Policy";
 
 export type PartialExcept<T, K extends keyof T> = Partial<Omit<T, K>> &
   Required<Pick<T, K>>;
@@ -28,6 +30,7 @@ export type MenuItemButton = {
   disabled?: boolean;
   icon?: React.ReactNode;
   tooltip?: React.ReactChild;
+  shortcut?: string[];
 };
 
 export type MenuItemWithChildren = {
@@ -62,6 +65,7 @@ export type MenuInternalLink = {
   selected?: boolean;
   disabled?: boolean;
   icon?: React.ReactNode;
+  shortcut?: string[];
 };
 
 export type MenuExternalLink = {
@@ -73,6 +77,7 @@ export type MenuExternalLink = {
   disabled?: boolean;
   level?: number;
   icon?: React.ReactNode;
+  shortcut?: string[];
 };
 
 export type MenuGroup = {
@@ -104,8 +109,24 @@ export type ActionContext = {
   isCommandBar: boolean;
   isButton: boolean;
   sidebarContext?: SidebarContextType;
+
+  // Legacy (backward compatibility) - returns primary active model's ID
   activeCollectionId?: string | undefined;
   activeDocumentId: string | undefined;
+
+  // New API - work directly with Model instances
+  getActiveModels: <T extends Model>(
+    modelClass: new (...args: never[]) => T
+  ) => T[];
+  getActiveModel: <T extends Model>(
+    modelClass: new (...args: never[]) => T
+  ) => T | undefined;
+  getActivePolicies: <T extends Model>(
+    modelClass: new (...args: never[]) => T
+  ) => Policy[];
+  isModelActive: (model: Model) => boolean;
+  activeModels: ReadonlySet<Model>;
+
   currentUserId: string | undefined;
   currentTeamId: string | undefined;
   location: Location;
@@ -120,6 +141,7 @@ type BaseAction = {
   analyticsName?: string;
   name: ((context: ActionContext) => React.ReactNode) | React.ReactNode;
   section: ((context: ActionContext) => string) | string;
+  description?: ((context: ActionContext) => string) | string;
   shortcut?: string[];
   keywords?: string;
   /** Higher number is higher in results, default is 0. */
@@ -138,7 +160,7 @@ export type Action = BaseAction & {
   tooltip?:
     | ((context: ActionContext) => React.ReactChild | undefined)
     | React.ReactChild;
-  perform: (context: ActionContext) => any;
+  perform: (context: ActionContext) => unknown;
 };
 
 export type InternalLinkAction = BaseAction & {

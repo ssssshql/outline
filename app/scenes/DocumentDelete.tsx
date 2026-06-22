@@ -3,17 +3,13 @@ import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { useHistory } from "react-router-dom";
 import { toast } from "sonner";
+import { errToString } from "@shared/utils/error";
 import type Document from "~/models/Document";
 import Button from "~/components/Button";
 import Flex from "~/components/Flex";
 import Text from "~/components/Text";
 import useStores from "~/hooks/useStores";
-import {
-  collectionPath,
-  documentPath,
-  homePath,
-  settingsPath,
-} from "~/utils/routeHelpers";
+import { collectionPath, documentPath, homePath } from "~/utils/routeHelpers";
 
 type Props = {
   document: Document;
@@ -27,8 +23,7 @@ function DocumentDelete({ document, onSubmit }: Props) {
   const history = useHistory();
   const [isDeleting, setDeleting] = React.useState(false);
   const [isArchiving, setArchiving] = React.useState(false);
-  const canArchive =
-    !document.isDraft && !document.isArchived && !document.template;
+  const canArchive = !document.isDraft && !document.isArchived;
   const collection = document.collectionId
     ? collections.get(document.collectionId)
     : undefined;
@@ -64,24 +59,27 @@ function DocumentDelete({ document, onSubmit }: Props) {
             }
           }
 
-          // If template, redirect to the template settings.
-          // Otherwise redirect to the collection (or) home.
-          const path = document.template
-            ? settingsPath("templates")
-            : collection
-              ? collectionPath(collection)
-              : homePath();
+          const path = collection ? collectionPath(collection) : homePath();
           history.push(path);
         }
 
         onSubmit();
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       } finally {
         setDeleting(false);
       }
     },
-    [onSubmit, ui, document, documents, history, collection]
+    [
+      onSubmit,
+      ui,
+      document,
+      documents,
+      history,
+      collection,
+      userMemberships,
+      groupMemberships,
+    ]
   );
 
   const handleArchive = React.useCallback(
@@ -93,7 +91,7 @@ function DocumentDelete({ document, onSubmit }: Props) {
         await document.archive();
         onSubmit();
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       } finally {
         setArchiving(false);
       }
@@ -104,17 +102,7 @@ function DocumentDelete({ document, onSubmit }: Props) {
   return (
     <form onSubmit={handleSubmit}>
       <Text as="p" type="secondary">
-        {document.isTemplate ? (
-          <Trans
-            defaults="Are you sure you want to delete the <em>{{ documentTitle }}</em> template?"
-            values={{
-              documentTitle: document.titleWithDefault,
-            }}
-            components={{
-              em: <strong />,
-            }}
-          />
-        ) : nestedDocumentsCount < 1 ? (
+        {nestedDocumentsCount < 1 ? (
           <Trans
             defaults="Are you sure about that? Deleting the <em>{{ documentTitle }}</em> document will delete all of its history</em>."
             values={{

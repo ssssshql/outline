@@ -12,6 +12,10 @@ export default class ClipboardTextSerializer extends Extension {
     return "clipboardTextSerializer";
   }
 
+  get allowInReadOnly() {
+    return true;
+  }
+
   get plugins() {
     const mdSerializer = this.editor.extensions.serializer();
 
@@ -57,7 +61,7 @@ export default class ClipboardTextSerializer extends Extension {
                   .map((node) => ProsemirrorHelper.toPlainText(node))
                   .join("\n")
               : mdSerializer.serialize(slice.content, {
-                  softBreak: true,
+                  commonMark: true,
                 });
           },
         },

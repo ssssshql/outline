@@ -1,8 +1,10 @@
 import type { RedisOptions } from "ioredis";
 import Redis from "ioredis";
-import defaults from "lodash/defaults";
+import { defaults } from "es-toolkit/compat";
+import { errToString } from "@shared/utils/error";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
+import { getConnectionName } from "./utils";
 
 type RedisAdapterOptions = RedisOptions & {
   /** Suffix to append to the connection name that will be displayed in Redis */
@@ -42,14 +44,7 @@ export default class RedisAdapter extends Redis {
     url: string | undefined,
     { connectionNameSuffix, ...options }: RedisAdapterOptions = {}
   ) {
-    /**
-     * For debugging. The connection name is based on the services running in
-     * this process. Note that this does not need to be unique.
-     */
-    const connectionNamePrefix = env.isDevelopment ? process.pid : "outline";
-    const connectionName =
-      `${connectionNamePrefix}:${env.SERVICES.join("-")}` +
-      (connectionNameSuffix ? `:${connectionNameSuffix}` : "");
+    const connectionName = getConnectionName(connectionNameSuffix);
 
     if (!url || !url.startsWith("ioredis://")) {
       super(
@@ -62,7 +57,8 @@ export default class RedisAdapter extends Redis {
         const decodedString = Buffer.from(url.slice(10), "base64").toString();
         customOptions = JSON.parse(decodedString);
       } catch (error) {
-        throw new Error(`Failed to decode redis adapter options: ${error}`);
+        const message = errToString(error);
+        throw new Error(`Failed to decode redis adapter options: ${message}`);
       }
 
       try {
@@ -70,7 +66,8 @@ export default class RedisAdapter extends Redis {
           defaults(options, { connectionName }, customOptions, defaultOptions)
         );
       } catch (error) {
-        throw new Error(`Failed to initialize redis client: ${error}`);
+        const message = errToString(error);
+        throw new Error(`Failed to initialize redis client: ${message}`);
       }
     }
 
@@ -86,6 +83,44 @@ export default class RedisAdapter extends Redis {
         Logger.error("Redis error", err);
       }
     });
+
+    // Skip the healthcheck on connections reserved for blocking or pub/sub
+    // operations (signalled via maxRetriesPerRequest: null). A PING issued on
+    // those connections queues behind the in-flight blocking command and would
+    // spuriously time out.
+    if (this.options.maxRetriesPerRequest !== null) {
+      const healthcheck = setInterval(() => {
+        if (this.status !== "ready") {
+          return;
+        }
+
+        let pingTimeout: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise((_, reject) => {
+          pingTimeout = setTimeout(
+            () => reject(new Error("ping timeout")),
+            env.REDIS_HEALTHCHECK_TIMEOUT
+          );
+        });
+
+        Promise.race([this.ping(), timeoutPromise])
+          .catch((err) => {
+            Logger.warn("Redis healthcheck failed, forcing reconnect", {
+              error: err,
+            });
+            this.disconnect(true);
+          })
+          .finally(() => {
+            if (pingTimeout) {
+              clearTimeout(pingTimeout);
+            }
+          });
+      }, env.REDIS_HEALTHCHECK_INTERVAL);
+
+      // Don't keep the Node event loop alive solely for the healthcheck.
+      healthcheck.unref();
+
+      this.on("end", () => clearInterval(healthcheck));
+    }
   }
 
   private static client: RedisAdapter;

@@ -10,6 +10,7 @@ import {
   BelongsTo,
   Column,
 } from "sequelize-typescript";
+import { toError } from "@shared/utils/error";
 import type { IntegrationService } from "@shared/types";
 import Logger from "../logging/Logger";
 import Team from "./Team";
@@ -49,6 +50,13 @@ class IntegrationAuthentication extends IdModel<
   @Column(DataType.BLOB)
   @Encrypted
   refreshToken: string;
+
+  @Column(DataType.STRING)
+  clientId: string | null;
+
+  @Column(DataType.BLOB)
+  @Encrypted
+  clientSecret: string | null;
 
   @Column(DataType.DATE)
   expiresAt: Date | null;
@@ -154,7 +162,10 @@ class IntegrationAuthentication extends IdModel<
 
       return refreshedToken;
     } catch (err) {
-      Logger.warn(`Failed to refresh ${this.service} access token`, err);
+      Logger.warn(
+        `Failed to refresh ${this.service} access token`,
+        toError(err)
+      );
       // Continue with existing token - it might still work
       return this.token;
     }

@@ -14,7 +14,9 @@ import type {
 } from "@shared/types";
 import type { BaseSchema } from "@server/routes/api/schema";
 import type { AccountProvisionerResult } from "./commands/accountProvisioner";
+import type { OAuthIntent, OAuthState } from "./utils/oauthState";
 import type {
+  AccessRequest,
   ApiKey,
   Attachment,
   AuthenticationProvider,
@@ -44,6 +46,7 @@ import type {
 export enum AuthenticationType {
   API = "api",
   APP = "app",
+  MCP = "mcp",
   OAUTH = "oauth",
 }
 
@@ -60,6 +63,8 @@ export type Authentication = {
   type?: AuthenticationType;
   /** The authentication service used to create this session (e.g., "email", "passkeys", "google"). */
   service?: string;
+  /** The OAuth scopes granted for this session, if applicable. */
+  scope?: string[];
 };
 
 export type Pagination = {
@@ -72,6 +77,9 @@ export type AppState = {
   auth: Authentication | Record<string, never>;
   transaction: Transaction;
   pagination: Pagination;
+  oauthClient?: OAuthClient;
+  oauthIntent?: OAuthIntent;
+  oauthState?: OAuthState;
 };
 
 export type AppContext = ParameterizedContext<AppState, DefaultContext>;
@@ -81,7 +89,7 @@ export type BaseReq = z.infer<typeof BaseSchema>;
 export type BaseRes = unknown;
 
 export interface APIContext<
-  ReqT = BaseReq,
+  ReqT = Partial<BaseReq>,
   ResT = BaseRes,
 > extends ParameterizedContext<
   AppState,
@@ -158,7 +166,8 @@ export type UserEvent = BaseEvent<User> &
           | "users.update"
           | "users.suspend"
           | "users.activate"
-          | "users.delete";
+          | "users.delete"
+          | "users.invite_accepted";
         userId: string;
       }
     | {
@@ -246,7 +255,18 @@ export type DocumentEvent = BaseEvent<Document> &
         createdAt: string;
       }
     | DocumentMovedEvent
+    | AccessRequestEvent
   );
+
+export type TemplateEvent = BaseEvent<Document> & {
+  name:
+    | "templates.create"
+    | "templates.update"
+    | "templates.delete"
+    | "templates.restore";
+  modelId: string;
+  collectionId?: string;
+};
 
 export type EmptyTrashEvent = {
   name: "documents.empty_trash";
@@ -294,6 +314,12 @@ export type DocumentUserEvent = BaseEvent<UserMembership> & {
   data: {
     isNew?: boolean;
   };
+};
+
+export type AccessRequestEvent = BaseEvent<AccessRequest> & {
+  name: "access_requests.create";
+  modelId: string;
+  documentId: string;
 };
 
 export type DocumentGroupEvent = BaseEvent<GroupMembership> & {
@@ -471,6 +497,7 @@ export type Event =
   | AuthenticationProviderEvent
   | DocumentEvent
   | DocumentUserEvent
+  | AccessRequestEvent
   | DocumentMovedEvent
   | DocumentGroupEvent
   | PinEvent
@@ -486,6 +513,7 @@ export type Event =
   | ShareEvent
   | SubscriptionEvent
   | TeamEvent
+  | TemplateEvent
   | UserEvent
   | UserMembershipEvent
   | ViewEvent
@@ -532,7 +560,6 @@ export type DocumentJSONExport = {
   updatedAt: string;
   publishedAt: string | null;
   fullWidth: boolean;
-  template: boolean;
   parentDocumentId: string | null;
 };
 
@@ -570,18 +597,22 @@ export type UnfurlIssueOrPR =
   | UnfurlResponse[UnfurlResourceType.Issue]
   | UnfurlResponse[UnfurlResourceType.PR];
 
+export type UnfurlProject = UnfurlResponse[UnfurlResourceType.Project];
+
 export type UnfurlURL = UnfurlResponse[UnfurlResourceType.URL] & {
   transformedUnfurl: true;
 };
 
 export type Unfurl =
   | UnfurlIssueOrPR
+  | UnfurlProject
   | UnfurlURL
   | {
       type: Exclude<
         UnfurlResourceType,
         | UnfurlResourceType.Issue
         | UnfurlResourceType.PR
+        | UnfurlResourceType.Project
         | UnfurlResourceType.URL
       >;
       [x: string]: JSONValue;

@@ -1,8 +1,9 @@
 import { MoreIcon } from "outline-icons";
+import { observer } from "mobx-react";
 import * as React from "react";
 import styled from "styled-components";
+import breakpoint from "styled-components-breakpoint";
 import { extraArea, hover, s } from "@shared/styles";
-import { isMobile } from "@shared/utils/browser";
 import Flex from "~/components/Flex";
 import Text from "~/components/Text";
 import { draggableOnDesktop, undraggableOnDesktop } from "~/styles";
@@ -10,7 +11,7 @@ import Desktop from "~/utils/Desktop";
 import { HStack } from "~/components/primitives/HStack";
 
 export type SidebarButtonProps = React.ComponentProps<typeof Button> & {
-  position: "top" | "bottom";
+  position?: "top" | "bottom";
   title: React.ReactNode;
   image: React.ReactNode;
   showMoreMenu?: boolean;
@@ -18,44 +19,46 @@ export type SidebarButtonProps = React.ComponentProps<typeof Button> & {
   children?: React.ReactNode;
 };
 
-const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps>(
-  function SidebarButton_(
-    {
-      position = "top",
-      showMoreMenu,
-      image,
-      title,
-      children,
-      onClick,
-      ...rest
-    }: SidebarButtonProps,
-    ref
-  ) {
-    return (
-      <Container
-        justify="space-between"
-        align="center"
-        shrink={false}
-        $position={position}
-      >
-        <Button
-          {...rest}
-          onClick={onClick}
+const SidebarButton = observer(
+  React.forwardRef<HTMLButtonElement, SidebarButtonProps>(
+    function SidebarButton_(
+      {
+        position = "top",
+        showMoreMenu,
+        image,
+        title,
+        children,
+        onClick,
+        ...rest
+      }: SidebarButtonProps,
+      ref
+    ) {
+      return (
+        <Container
+          justify="space-between"
+          align="center"
+          shrink={false}
           $position={position}
-          as="button"
-          ref={ref}
-          role="button"
         >
-          <Content>
-            {image}
-            {title && <Title>{title}</Title>}
-          </Content>
-          {showMoreMenu && <StyledMoreIcon />}
-        </Button>
-        {children}
-      </Container>
-    );
-  }
+          <Button
+            {...rest}
+            onClick={onClick}
+            $position={position}
+            as="button"
+            ref={ref}
+            role="button"
+          >
+            <Content>
+              {image}
+              {title && <Title>{title}</Title>}
+            </Content>
+            {showMoreMenu && <StyledMoreIcon />}
+          </Button>
+          {children}
+        </Container>
+      );
+    }
+  )
 );
 
 const StyledMoreIcon = styled(MoreIcon)`
@@ -65,7 +68,7 @@ const StyledMoreIcon = styled(MoreIcon)`
 const Container = styled(Flex)<{ $position: "top" | "bottom" }>`
   overflow: hidden;
   padding-top: ${(props) =>
-    props.$position === "top" && Desktop.hasInsetTitlebar() ? 36 : 0}px;
+    props.$position === "top" && Desktop.hasInsetTitlebar() ? 40 : 0}px;
   ${draggableOnDesktop()}
 `;
 
@@ -86,40 +89,38 @@ const Button = styled(Flex)<{
   flex: 1;
   color: ${s("textTertiary")};
   align-items: center;
-  padding: ${isMobile() ? 12 : 4}px 4px;
+  padding: 12px;
   font-size: 15px;
   font-weight: 500;
   border-radius: 4px;
   border: 0;
-  margin: ${(props) => (!isMobile() && props.$position === "top" ? 16 : 8)}px 0;
+  margin: 8px;
   background: none;
   flex-shrink: 0;
 
   -webkit-appearance: none;
   text-decoration: none;
-  text-align: left;
+  text-align: start;
   user-select: none;
   position: relative;
+  cursor: var(--pointer);
 
   ${undraggableOnDesktop()}
   ${extraArea(4)}
+  ${breakpoint("tablet")`
+    padding: 8px;
+  `}
 
   &:not(:disabled) {
+    &: ${hover} {
+      background: ${s("sidebarHoverBackground")};
+    }
+
     &:active,
-    &:${hover},
     &[aria-expanded="true"] {
       color: ${s("sidebarText")};
       background: ${s("sidebarActiveBackground")};
-      cursor: var(--pointer);
     }
-  }
-
-  &:last-child {
-    margin-right: 8px;
-  }
-
-  &:first-child {
-    margin-left: 8px;
   }
 `;
 

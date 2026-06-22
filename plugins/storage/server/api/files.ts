@@ -2,6 +2,7 @@ import JWT from "jsonwebtoken";
 import Router from "koa-router";
 import mime from "mime-types";
 import contentDisposition from "content-disposition";
+import { bytesToHumanReadable } from "@shared/utils/files";
 import env from "@server/env";
 import {
   AuthenticationError,
@@ -12,6 +13,7 @@ import {
 import auth from "@server/middlewares/authentication";
 import multipart from "@server/middlewares/multipart";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
+import timeout from "@server/middlewares/timeout";
 import validate from "@server/middlewares/validate";
 import { Attachment } from "@server/models";
 import AttachmentHelper from "@server/models/helpers/AttachmentHelper";
@@ -27,9 +29,10 @@ const router = new Router();
 
 router.post(
   "files.create",
-  rateLimiter(RateLimiterStrategy.TenPerMinute),
+  rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
   auth(),
   validate(T.FilesCreateSchema),
+  timeout(30 * 60 * 1000), // 30 minutes for large file uploads
   multipart({
     maximumFileSize: Math.max(
       env.FILE_STORAGE_UPLOAD_MAX_SIZE,
@@ -41,6 +44,10 @@ router.post(
     const { key } = ctx.input.body;
     const file = ctx.input.file;
 
+    if (!file) {
+      throw ValidationError("Request must include a file parameter");
+    }
+
     const attachment = await Attachment.findOne({
       where: { key },
       rejectOnEmpty: true,
@@ -50,15 +57,29 @@ router.post(
       throw AuthorizationError("Invalid key");
     }
 
+    const declaredSize = Number(attachment.size);
+
+    if (file.size > declaredSize) {
+      throw ValidationError(
+        `The uploaded file exceeds the declared size of ${bytesToHumanReadable(
+          declaredSize
+        )}`
+      );
+    }
+
     try {
       await attachment.writeFile(file);
     } catch (err) {
-      if (err.message.includes("permission denied")) {
+      if (err instanceof Error && err.message.includes("permission denied")) {
         throw Error(
           `Permission denied writing to "${key}". Check the host machine file system permissions.`
         );
       }
       throw err;
+    }
+
+    if (declaredSize !== file.size) {
+      await attachment.update({ size: file.size }, { silent: true });
     }
 
     ctx.body = {

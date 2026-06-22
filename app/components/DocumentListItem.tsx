@@ -5,6 +5,7 @@ import {
 import { observer } from "mobx-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { mergeRefs } from "react-merge-refs";
 import { Link } from "react-router-dom";
 import { DocumentIcon } from "outline-icons";
 import styled, { css, useTheme } from "styled-components";
@@ -22,10 +23,12 @@ import StarButton, { AnimatedStar } from "~/components/Star";
 import Tooltip from "~/components/Tooltip";
 import useBoolean from "~/hooks/useBoolean";
 import useCurrentUser from "~/hooks/useCurrentUser";
+import useMobile from "~/hooks/useMobile";
 import { useLocationSidebarContext } from "~/hooks/useLocationSidebarContext";
 import DocumentMenu from "~/menus/DocumentMenu";
 import { documentPath } from "~/utils/routeHelpers";
 import { determineSidebarContext } from "./Sidebar/components/SidebarContext";
+import { useDragDocument } from "./Sidebar/hooks/useDragAndDrop";
 import { ActionContextProvider } from "~/hooks/useActionContext";
 import { useDocumentMenuAction } from "~/hooks/useDocumentMenuAction";
 import { ContextMenu } from "./Menu/ContextMenu";
@@ -39,7 +42,6 @@ type Props = {
   showCollection?: boolean;
   showPublished?: boolean;
   showDraft?: boolean;
-  showTemplate?: boolean;
 };
 
 const SEARCH_RESULT_REGEX = /<b\b[^>]*>(.*?)<\/b>/gi;
@@ -59,6 +61,7 @@ function DocumentListItem(
   const { userMemberships, groupMemberships } = useStores();
   const locationSidebarContext = useLocationSidebarContext();
   const [menuOpen, handleMenuOpen, handleMenuClose] = useBoolean();
+  const isMobile = useMobile();
 
   let itemRef: React.Ref<HTMLAnchorElement> =
     React.useRef<HTMLAnchorElement>(null);
@@ -75,7 +78,6 @@ function DocumentListItem(
     showCollection,
     showPublished,
     showDraft = true,
-    showTemplate,
     highlight,
     context,
     ...rest
@@ -83,7 +85,7 @@ function DocumentListItem(
   const queryIsInTitle =
     !!highlight &&
     !!document.title.toLowerCase().includes(highlight.toLowerCase());
-  const canStar = !document.isArchived && !document.isTemplate;
+  const canStar = !document.isArchived;
 
   const isShared = !!(
     userMemberships.getByDocumentId(document.id) ||
@@ -98,14 +100,30 @@ function DocumentListItem(
 
   const contextMenuAction = useDocumentMenuAction({ documentId: document.id });
 
+  const [{ isDragging }, draggableRef] = useDragDocument(
+    document.asNavigationNode,
+    0,
+    document,
+    false,
+    false
+  );
+
+  const mergedRef = React.useMemo(
+    () =>
+      mergeRefs<HTMLAnchorElement>([
+        itemRef,
+        draggableRef,
+      ] as React.Ref<HTMLAnchorElement>[]),
+    [itemRef, draggableRef]
+  );
+
   return (
     <ActionContextProvider
       value={{
-        activeDocumentId: document.id,
-        activeCollectionId:
-          !isShared && document.collectionId
-            ? document.collectionId
-            : undefined,
+        activeModels: [
+          document,
+          ...(!isShared && document.collection ? [document.collection] : []),
+        ],
       }}
     >
       <ContextMenu
@@ -115,9 +133,10 @@ function DocumentListItem(
         onClose={handleMenuClose}
       >
         <DocumentLink
-          ref={itemRef}
+          ref={mergedRef}
           dir={document.dir}
           $isStarred={document.isStarred}
+          $isDragging={isDragging}
           $menuOpen={menuOpen}
           to={{
             pathname: documentPath(document),
@@ -162,10 +181,7 @@ function DocumentListItem(
                     <Badge>{t("Draft")}</Badge>
                   </Tooltip>
                 )}
-                {canStar && <StarButton document={document} />}
-                {document.isTemplate && showTemplate && (
-                  <Badge primary>{t("Template")}</Badge>
-                )}
+                {canStar && !isMobile && <StarButton document={document} />}
               </Heading>
 
               {!queryIsInTitle && (
@@ -231,6 +247,7 @@ const Actions = styled(EventBoundary)`
 
 const DocumentLink = styled(Link)<{
   $isStarred?: boolean;
+  $isDragging?: boolean;
   $menuOpen?: boolean;
 }>`
   display: flex;
@@ -241,6 +258,8 @@ const DocumentLink = styled(Link)<{
   max-height: 50vh;
   width: calc(100vw - 8px);
   cursor: var(--pointer);
+  transition: opacity 250ms ease;
+  opacity: ${(props) => (props.$isDragging ? 0.1 : 1)};
 
   &:focus-visible {
     outline: none;

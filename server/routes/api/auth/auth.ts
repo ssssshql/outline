@@ -1,6 +1,6 @@
 import { subHours, subMinutes } from "date-fns";
 import Router from "koa-router";
-import uniqBy from "lodash/uniqBy";
+import { uniqBy } from "es-toolkit/compat";
 import { TeamPreference } from "@shared/types";
 import { parseDomain } from "@shared/utils/domains";
 import env from "@server/env";
@@ -20,6 +20,7 @@ import {
 import ValidateSSOAccessTask from "@server/queues/tasks/ValidateSSOAccessTask";
 import type { APIContext } from "@server/types";
 import { getSessionsInCookie } from "@server/utils/authentication";
+import RateLimiter from "@server/utils/RateLimiter";
 import type * as T from "./schema";
 
 const router = new Router();
@@ -41,7 +42,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
           logo: team.getPreference(TeamPreference.PublicBranding)
             ? team.avatarUrl
             : undefined,
-          providers: AuthenticationHelper.providersForTeam(team).map(
+          providers: (await AuthenticationHelper.providersForTeam(team)).map(
             presentProviderConfig
           ),
         },
@@ -55,7 +56,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
   if (domain.custom) {
     const team = await Team.scope("withAuthenticationProviders").findOne({
       where: {
-        domain: ctx.request.hostname,
+        domain: ctx.request.hostname.toLowerCase(),
       },
     });
 
@@ -68,7 +69,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
             ? team.avatarUrl
             : undefined,
           hostname: ctx.request.hostname,
-          providers: AuthenticationHelper.providersForTeam(team).map(
+          providers: (await AuthenticationHelper.providersForTeam(team)).map(
             presentProviderConfig
           ),
         },
@@ -95,7 +96,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
             ? team.avatarUrl
             : undefined,
           hostname: ctx.request.hostname,
-          providers: AuthenticationHelper.providersForTeam(team).map(
+          providers: (await AuthenticationHelper.providersForTeam(team)).map(
             presentProviderConfig
           ),
         },
@@ -107,7 +108,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
   // Otherwise, we're requesting from the standard root signin page
   ctx.body = {
     data: {
-      providers: AuthenticationHelper.providersForTeam().map(
+      providers: (await AuthenticationHelper.providersForTeam()).map(
         presentProviderConfig
       ),
     },
@@ -145,7 +146,18 @@ router.post("auth.info", auth(), async (ctx: APIContext<T.AuthInfoReq>) => {
     user.lastSignedInAt &&
     user.lastSignedInAt < subHours(new Date(), 1)
   ) {
-    await new ValidateSSOAccessTask().schedule({ userId: user.id });
+    await new ValidateSSOAccessTask()
+      .schedule(
+        {
+          userId: user.id,
+        },
+        {
+          jobId: `validate-sso:${user.id}`,
+        }
+      )
+      .catch(() => {
+        // Ignore errors from duplicate jobId when a validation is already queued
+      });
   }
 
   ctx.body = {
@@ -176,7 +188,7 @@ router.post(
   transaction(),
   async (ctx: APIContext<T.AuthDeleteReq>) => {
     const { auth, transaction } = ctx.state;
-    const { user } = auth;
+    const { user, token } = auth;
 
     await user.rotateJwtSecret({ transaction });
     await Event.createFromContext(ctx, {
@@ -186,6 +198,8 @@ router.post(
         name: user.name,
       },
     });
+
+    void RateLimiter.clearCachedToken(token);
 
     ctx.cookies.set("accessToken", "", {
       sameSite: "lax",

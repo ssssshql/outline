@@ -8,6 +8,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useTheme } from "styled-components";
+import { parseReactionShorthand } from "@shared/editor/lib/emoji";
 import type { ProsemirrorData } from "@shared/types";
 import { getEventFiles } from "@shared/utils/files";
 import { AttachmentValidation, CommentValidation } from "@shared/validations";
@@ -51,14 +52,17 @@ type Props = {
   animatePresence?: boolean;
   /** Text to highlight at the top of the comment */
   highlightedText?: string;
-  /** The text direction of the editor */
-  dir?: "rtl" | "ltr";
   /** Callback when the editor is focused */
   onFocus?: () => void;
   /** Callback when the editor is blurred */
   onBlur?: () => void;
   /** Callback when user presses up arrow at the start of the editor */
   onUpArrowAtStart?: () => void;
+  /**
+   * Callback invoked when a new top-level comment is about to be created,
+   * just before it is added to the store. Receives the generated comment id.
+   */
+  onBeforeCreate?: (commentId: string) => void;
 };
 
 function CommentForm({
@@ -70,12 +74,12 @@ function CommentForm({
   onFocus,
   onBlur,
   onUpArrowAtStart,
+  onBeforeCreate,
   autoFocus,
   standalone,
   placeholder,
   animatePresence,
   highlightedText,
-  dir,
   ...rest
 }: Props) {
   const { editor } = useDocumentContext();
@@ -102,6 +106,11 @@ function CommentForm({
   }, [editor, thread]);
 
   useOnClickOutside(formRef, reset);
+
+  React.useEffect(() => {
+    window.addEventListener("beforeunload", reset);
+    return () => window.removeEventListener("beforeunload", reset);
+  }, [reset]);
 
   const handleCreateComment = action(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -137,7 +146,12 @@ function CommentForm({
         toast.error(t("Error creating comment"));
       });
 
-    // optimistically update the comment model
+    // optimistically update the comment model. Setting the data here, rather
+    // than waiting for save() to resolve, avoids a frame where the rendered
+    // comment is empty before the saved data is applied.
+    if (draft) {
+      comment.data = draft;
+    }
     comment.isNew = false;
     comment.createdById = user.id;
     comment.createdBy = user;
@@ -147,6 +161,30 @@ function CommentForm({
     event.preventDefault();
     if (!draft) {
       return;
+    }
+
+    // "+:emoji:" shorthand: react to the comment above instead of replying.
+    if (thread && !thread.isNew) {
+      const emoji = parseReactionShorthand(draft);
+      if (emoji) {
+        const target = comments
+          .inThread(thread.id)
+          .filter((comment) => !comment.isNew)
+          .pop();
+
+        if (target) {
+          onSaveDraft(undefined);
+          setForceRender((s) => ++s);
+          void target.addReaction({ emoji, user });
+          onSubmit?.();
+
+          // re-focus the comment editor
+          setTimeout(() => {
+            editorRef.current?.focusAtStart();
+          }, 0);
+          return;
+        }
+      }
     }
 
     const commentDraft = draft;
@@ -165,6 +203,9 @@ function CommentForm({
     );
 
     comment.id = uuidv4();
+    if (!thread) {
+      onBeforeCreate?.(comment.id);
+    }
     comments.add(comment);
 
     comment
@@ -254,31 +295,36 @@ function CommentForm({
   const handleMounted = React.useCallback(
     (ref) => {
       if (autoFocus && ref && !hasFocusedOnMount.current) {
-        ref.focusAtStart();
+        if (!draft) {
+          ref.focusAtStart();
+        }
         hasFocusedOnMount.current = true;
       }
     },
-    [autoFocus]
+    [autoFocus, draft]
   );
 
   const presence = animatePresence
     ? {
         initial: {
           opacity: 0,
-          marginBottom: -100,
+          y: 10,
         },
         animate: {
           opacity: 1,
-          marginBottom: 0,
+          y: 0,
           transition: {
-            type: "spring",
-            bounce: 0.1,
+            duration: 0.2,
+            ease: "easeOut",
           },
         },
         exit: {
           opacity: 0,
-          marginBottom: -100,
-          scale: 0.98,
+          y: 10,
+          transition: {
+            duration: 0.2,
+            ease: "easeOut",
+          },
         },
       }
     : {};
@@ -299,8 +345,19 @@ function CommentForm({
           tabIndex={-1}
         />
       </VisuallyHidden.Root>
-      <Flex gap={8} align="flex-start" reverse={dir === "rtl"}>
-        <Avatar model={user} size={24} style={{ marginTop: 8 }} />
+      <Flex gap={8} align="flex-start">
+        {standalone ? (
+          <m.div
+            style={{ marginTop: 8 }}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+          >
+            <Avatar model={user} size={24} />
+          </m.div>
+        ) : (
+          <Avatar model={user} size={24} style={{ marginTop: 8 }} />
+        )}
         <Bubble
           gap={10}
           onClick={handleClickPadding}
@@ -312,27 +369,29 @@ function CommentForm({
           {highlightedText && (
             <HighlightedText>{highlightedText}</HighlightedText>
           )}
-          <CommentEditor
-            key={`${forceRender}`}
-            ref={mergeRefs([editorRef, handleMounted])}
-            defaultValue={draft}
-            onChange={handleChange}
-            onSave={handleSave}
-            onFocus={handleFocus}
-            onBlur={handleBlur}
-            onUpArrowAtStart={handleUpArrowAtStart}
-            maxLength={CommentValidation.maxLength}
-            placeholder={
-              placeholder ||
-              // isNew is only the case for comments that exist in draft state,
-              // they are marks in the document, but not yet saved to the db.
-              (thread?.isNew
-                ? `${t("Add a comment")}…`
-                : `${t("Add a reply")}…`)
-            }
-          />
+          <React.Suspense fallback={<div style={{ height: 24 }} />}>
+            <CommentEditor
+              key={`${forceRender}`}
+              ref={mergeRefs([editorRef, handleMounted])}
+              defaultValue={draft}
+              onChange={handleChange}
+              onSave={handleSave}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
+              onUpArrowAtStart={handleUpArrowAtStart}
+              maxLength={CommentValidation.maxLength}
+              placeholder={
+                placeholder ||
+                // isNew is only the case for comments that exist in draft state,
+                // they are marks in the document, but not yet saved to the db.
+                (thread?.isNew
+                  ? `${t("Add a comment")}…`
+                  : `${t("Add a reply")}…`)
+              }
+            />
+          </React.Suspense>
           {(inputFocused || draft) && (
-            <Flex justify="space-between" reverse={dir === "rtl"} gap={8}>
+            <Flex justify="space-between" gap={8}>
               <HStack>
                 <ButtonSmall type="submit" borderOnHover>
                   {thread && !thread.isNew ? t("Reply") : t("Post")}

@@ -1,10 +1,12 @@
 import { FetchError } from "node-fetch";
 import { Op } from "sequelize";
+import { toError } from "@shared/utils/error";
 import { colorPalette } from "@shared/utils/collections";
 import WebhookDisabledEmail from "@server/emails/templates/WebhookDisabledEmail";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
 import {
+  Attachment,
   Collection,
   FileOperation,
   Group,
@@ -25,6 +27,7 @@ import {
   Comment,
 } from "@server/models";
 import {
+  presentAttachment,
   presentCollection,
   presentDocument,
   presentRevision,
@@ -44,6 +47,7 @@ import {
 } from "@server/presenters";
 import { BaseTask } from "@server/queues/tasks/base/BaseTask";
 import type {
+  AttachmentEvent,
   CollectionEvent,
   CollectionGroupEvent,
   CollectionUserEvent,
@@ -75,6 +79,56 @@ function assertUnreachable(event: never) {
   Logger.warn(`DeliverWebhookTask did not handle ${(event as Event).name}`);
 }
 
+/**
+ * Node connection-level error codes that are expected when delivering to
+ * arbitrary, user-supplied webhook URLs. These indicate a misconfigured or
+ * unreachable destination rather than a bug in Outline.
+ */
+const expectedNetworkErrorCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "EPROTO",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/**
+ * Determine whether an error thrown while delivering a webhook is an expected
+ * network failure caused by the user-supplied destination URL (connection
+ * reset, timeout, unreachable host, invalid certificate, etc) rather than an
+ * unexpected bug. Such failures are noisy and do not need error tracking.
+ *
+ * @param err The error that occurred during delivery.
+ * @returns true if the error is an expected network failure.
+ */
+export function isExpectedNetworkError(err: unknown): boolean {
+  if (err instanceof FetchError) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && expectedNetworkErrorCodes.has(code)) {
+      return true;
+    }
+    // node-fetch surfaces some low-level socket failures (and our fetch wrapper
+    // converts aborted requests into timeouts) without a structured code.
+    return /socket hang up|request timeout|network|ECONNRESET/i.test(
+      err.message
+    );
+  }
+  return false;
+}
+
 type Props = {
   subscriptionId: string;
   event: Event;
@@ -103,16 +157,19 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
     });
 
     switch (event.name) {
-      case "api_keys.create":
-      case "api_keys.delete":
       case "attachments.create":
       case "attachments.update":
       case "attachments.delete":
+        await this.handleAttachmentEvent(subscription, event);
+        return;
+      case "api_keys.create":
+      case "api_keys.delete":
       case "subscriptions.create":
       case "subscriptions.delete":
       case "authenticationProviders.update":
       case "notifications.create":
       case "notifications.update":
+      case "access_requests.create":
         // Ignored
         return;
       case "users.create":
@@ -125,6 +182,7 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       case "users.invite":
       case "users.promote":
       case "users.demote":
+      case "users.invite_accepted":
         await this.handleUserEvent(subscription, event);
         return;
       case "documents.create":
@@ -246,6 +304,10 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       case "oauthClients.delete":
         // Ignored
         return;
+      case "templates.create":
+      case "templates.update":
+      case "templates.delete":
+      case "templates.restore":
       case "passkeys.create":
       case "passkeys.update":
       case "passkeys.delete":
@@ -254,6 +316,24 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       default:
         assertUnreachable(event);
     }
+  }
+
+  private async handleAttachmentEvent(
+    subscription: WebhookSubscription,
+    event: AttachmentEvent
+  ): Promise<void> {
+    const model = await Attachment.findByPk(event.modelId, {
+      paranoid: false,
+    });
+
+    await this.sendWebhook({
+      event,
+      subscription,
+      payload: {
+        id: event.modelId,
+        model: model && presentAttachment(model),
+      },
+    });
   }
 
   private async handleWebhookSubscriptionEvent(
@@ -690,6 +770,9 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
     });
   }
 
+  /** Maximum number of bytes to read from webhook response bodies. */
+  private static readonly MAX_RESPONSE_BODY_SIZE = 1024;
+
   private async sendWebhook({
     event,
     subscription,
@@ -704,8 +787,11 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       status: "pending",
     });
 
-    let response, requestBody, requestHeaders;
+    let response: Awaited<ReturnType<typeof fetch>> | undefined;
+    let requestBody, requestHeaders;
     let status: WebhookDeliveryStatus;
+    let responseBody = "";
+
     try {
       requestBody = presentWebhook({
         event,
@@ -730,13 +816,14 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       });
       status = response.ok ? "success" : "failed";
     } catch (err) {
-      if (err instanceof FetchError && env.isCloudHosted) {
-        Logger.warn(`Failed to send webhook: ${err.message}`, {
+      const error = toError(err);
+      if (isExpectedNetworkError(err) && env.isCloudHosted) {
+        Logger.warn(`Failed to send webhook: ${error.message}`, {
           event,
           deliveryId: delivery.id,
         });
       } else {
-        Logger.error("Failed to send webhook", err, {
+        Logger.error("Failed to send webhook", error, {
           event,
           deliveryId: delivery.id,
         });
@@ -744,12 +831,25 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       status = "failed";
     }
 
+    if (response) {
+      try {
+        // TODO: Use stream to avoid buffering large responses in memory.
+        const text = await response.text();
+        responseBody = text.slice(0, DeliverWebhookTask.MAX_RESPONSE_BODY_SIZE);
+      } catch (err) {
+        Logger.debug(
+          "task",
+          `Failed to read webhook response body: ${(err as Error).message}`
+        );
+      }
+    }
+
     await delivery.update({
       status,
       statusCode: response ? response.status : null,
       requestBody,
       requestHeaders,
-      responseBody: response ? await response.text() : "",
+      responseBody,
       responseHeaders: response
         ? Object.fromEntries(response.headers.entries())
         : {},
@@ -759,10 +859,14 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       try {
         await this.checkAndDisableSubscription(subscription);
       } catch (err) {
-        Logger.error("Failed to check and disable recent deliveries", err, {
-          event,
-          deliveryId: delivery.id,
-        });
+        Logger.error(
+          "Failed to check and disable recent deliveries",
+          toError(err),
+          {
+            event,
+            deliveryId: delivery.id,
+          }
+        );
       }
     }
   }
@@ -840,6 +944,7 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       if (createdBy && team) {
         await new WebhookDisabledEmail({
           to: createdBy.email,
+          language: createdBy.language,
           teamUrl: team.url,
           webhookName: subscription.name,
         }).schedule();

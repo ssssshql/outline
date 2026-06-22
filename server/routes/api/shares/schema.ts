@@ -1,7 +1,10 @@
-import isEmpty from "lodash/isEmpty";
+import { isURL } from "class-validator";
+import { isEmpty } from "es-toolkit/compat";
 import { z } from "zod";
 import { UrlHelper } from "@shared/utils/UrlHelper";
+import { ShareValidation } from "@shared/validations";
 import { Share } from "@server/models";
+import { ValidateURL } from "@server/validation";
 import { zodIdType } from "@server/utils/zod";
 import { BaseSchema } from "../schema";
 
@@ -20,7 +23,7 @@ export const SharesInfoSchema = BaseSchema.extend({
           isEmpty(body.documentId)
         ),
       {
-        message: "one of id, collectionId, or documentId is required",
+        error: "one of id, collectionId, or documentId is required",
       }
     ),
 });
@@ -37,7 +40,7 @@ export const SharesListSchema = BaseSchema.extend({
           ", "
         )}`,
       })
-      .default("updatedAt"),
+      .prefault("updatedAt"),
     direction: z
       .string()
       .optional()
@@ -49,16 +52,26 @@ export type SharesListReq = z.infer<typeof SharesListSchema>;
 
 export const SharesUpdateSchema = BaseSchema.extend({
   body: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
     includeChildDocuments: z.boolean().optional(),
     published: z.boolean().optional(),
     allowIndexing: z.boolean().optional(),
+    allowSubscriptions: z.boolean().optional(),
     showLastUpdated: z.boolean().optional(),
     showTOC: z.boolean().optional(),
+    title: z.string().max(ShareValidation.maxTitleLength).nullish(),
+    iconUrl: z
+      .string()
+      .max(ShareValidation.maxIconUrlLength)
+      .refine(
+        (val) => isURL(val, { require_host: false, require_protocol: false }),
+        { error: ValidateURL.message }
+      )
+      .nullish(),
     urlId: z
       .string()
       .regex(UrlHelper.SHARE_URL_SLUG_REGEX, {
-        message: "must contain only alphanumeric and dashes",
+        error: "must contain only alphanumeric and dashes",
       })
       .nullish(),
   }),
@@ -71,28 +84,35 @@ export const SharesCreateSchema = BaseSchema.extend({
     .object({
       collectionId: zodIdType().optional(),
       documentId: zodIdType().optional(),
-      published: z.boolean().default(false),
+      published: z.boolean().prefault(false),
       allowIndexing: z.boolean().optional(),
+      allowSubscriptions: z.boolean().optional(),
       showLastUpdated: z.boolean().optional(),
       showTOC: z.boolean().optional(),
       urlId: z
         .string()
         .regex(UrlHelper.SHARE_URL_SLUG_REGEX, {
-          message: "must contain only alphanumeric and dashes",
+          error: "must contain only alphanumeric and dashes",
         })
         .optional(),
-      includeChildDocuments: z.boolean().default(false),
+      includeChildDocuments: z.boolean().prefault(false),
     })
     .refine((obj) => !(isEmpty(obj.collectionId) && isEmpty(obj.documentId)), {
-      message: "one of collectionId or documentId is required",
-    }),
+      error: "one of collectionId or documentId is required",
+    })
+    .refine(
+      (obj) => !(!isEmpty(obj.collectionId) && !isEmpty(obj.documentId)),
+      {
+        error: "only one of collectionId or documentId may be provided",
+      }
+    ),
 });
 
 export type SharesCreateReq = z.infer<typeof SharesCreateSchema>;
 
 export const SharesRevokeSchema = BaseSchema.extend({
   body: z.object({
-    id: z.string().uuid(),
+    id: z.uuid(),
   }),
 });
 
@@ -105,3 +125,35 @@ export const SharesSitemapSchema = BaseSchema.extend({
 });
 
 export type SharesSitemapReq = z.infer<typeof SharesSitemapSchema>;
+
+export const SharesSubscribeSchema = BaseSchema.extend({
+  body: z.object({
+    shareId: z.string(),
+    documentId: z.uuid(),
+    email: z.string().email(),
+  }),
+});
+
+export type SharesSubscribeReq = z.infer<typeof SharesSubscribeSchema>;
+
+export const SharesConfirmSubscriptionSchema = BaseSchema.extend({
+  query: z.object({
+    id: z.uuid(),
+    token: z.string(),
+    follow: z.string().optional(),
+  }),
+});
+
+export type SharesConfirmSubscriptionReq = z.infer<
+  typeof SharesConfirmSubscriptionSchema
+>;
+
+export const SharesUnsubscribeSchema = BaseSchema.extend({
+  query: z.object({
+    id: z.uuid(),
+    token: z.string(),
+    follow: z.string().optional(),
+  }),
+});
+
+export type SharesUnsubscribeReq = z.infer<typeof SharesUnsubscribeSchema>;

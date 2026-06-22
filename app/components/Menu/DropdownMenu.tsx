@@ -13,6 +13,7 @@ import { MenuProvider } from "~/components/primitives/Menu/MenuContext";
 import { actionToMenuItem } from "~/actions";
 import useActionContext from "~/hooks/useActionContext";
 import useMobile from "~/hooks/useMobile";
+import { preventDefault } from "~/utils/events";
 import type {
   ActionVariant,
   ActionWithChildren,
@@ -32,6 +33,12 @@ type Props = {
   align?: "start" | "end";
   /** ARIA label for the menu */
   ariaLabel: string;
+  /**
+   * Whether the menu should lock page scroll and trap focus while open.
+   * Defaults to true. Set to false to avoid the scrollbar-removal layout
+   * shift when the menu lives inside a scrollable container.
+   */
+  modal?: boolean;
   /** Additional component to display at the bottom of the top-level menu */
   append?: React.ReactNode;
   /** Callback when menu is opened */
@@ -49,6 +56,7 @@ export const DropdownMenu = observer(
         children,
         align = "start",
         ariaLabel,
+        modal = true,
         append,
         onOpen,
         onClose,
@@ -98,11 +106,6 @@ export const DropdownMenu = observer(
         }
       }, []);
 
-      const handleCloseAutoFocus = React.useCallback(
-        (e: Event) => e.preventDefault(),
-        []
-      );
-
       if (isMobile) {
         return (
           <MobileDropdown
@@ -120,7 +123,7 @@ export const DropdownMenu = observer(
 
       return (
         <MenuProvider variant="dropdown">
-          <Menu open={open} onOpenChange={handleOpenChange}>
+          <Menu open={open} onOpenChange={handleOpenChange} modal={modal}>
             <MenuTrigger ref={ref} aria-label={ariaLabel} {...rest}>
               {children}
             </MenuTrigger>
@@ -129,7 +132,7 @@ export const DropdownMenu = observer(
               aria-label={ariaLabel}
               onAnimationStart={disablePointerEvents}
               onAnimationEnd={enablePointerEvents}
-              onCloseAutoFocus={handleCloseAutoFocus}
+              onCloseAutoFocus={preventDefault}
             >
               {content}
               {append}

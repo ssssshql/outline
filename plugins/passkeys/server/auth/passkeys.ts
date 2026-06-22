@@ -8,11 +8,12 @@ import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 import Router from "koa-router";
 import { randomBytes } from "node:crypto";
+import { toError } from "@shared/utils/error";
 import { User, UserPasskey, Team } from "@server/models";
 import auth from "@server/middlewares/authentication";
 import validate from "@server/middlewares/validate";
 import env from "@server/env";
-import { ValidationError } from "@server/errors";
+import { AuthorizationError, ValidationError } from "@server/errors";
 import type { APIContext } from "@server/types";
 import Logger from "@server/logging/Logger";
 import Redis from "@server/storage/redis";
@@ -29,6 +30,46 @@ const CHALLENGE_EXPIRY_MS = Minute.ms * 5;
 
 // Helper to get RP ID (domain) - for simplicity, we can use the hostname but strip port.
 const getRpID = (ctx: APIContext) => ctx.request.hostname;
+
+/**
+ * Helper to get the expected origin for WebAuthn.
+ * Properly handles non-standard ports by checking X-Forwarded-Port header.
+ *
+ * @param ctx - the API context.
+ * @returns the expected origin (protocol://host:port).
+ */
+export const getExpectedOrigin = (ctx: APIContext): string => {
+  const protocol = ctx.protocol;
+  const hostname = ctx.request.hostname;
+
+  // When behind a proxy with app.proxy = true, Koa uses X-Forwarded-Host
+  // which typically doesn't include the port. We need to check X-Forwarded-Port.
+  const forwardedPort = ctx.request.get("X-Forwarded-Port");
+
+  // ctx.request.host includes port if present (e.g., "example.com:3000")
+  // ctx.request.hostname excludes port (e.g., "example.com")
+  const hostWithPort = ctx.request.host;
+
+  // Determine if we need to add a port to the origin
+  let origin = `${protocol}://${hostname}`;
+
+  // Check if X-Forwarded-Port exists (when behind a proxy)
+  if (forwardedPort) {
+    const port = parseInt(forwardedPort, 10);
+    // Only add port if it's not the default for the protocol
+    if (
+      (protocol === "https" && port !== 443) ||
+      (protocol === "http" && port !== 80)
+    ) {
+      origin = `${protocol}://${hostname}:${port}`;
+    }
+  } else if (hostWithPort !== hostname) {
+    // hostWithPort includes port, use it directly
+    origin = `${protocol}://${hostWithPort}`;
+  }
+
+  return origin;
+};
 
 /**
  * Generate Redis key for registration challenge.
@@ -55,12 +96,20 @@ router.post(
     const { user } = ctx.state.auth;
     authorize(user, "createUserPasskey", user.team);
 
+    // Fetch existing passkeys to exclude them from registration
+    const existingPasskeys = await UserPasskey.findAll({
+      where: { userId: user.id },
+    });
+
     const options = await generateRegistrationOptions({
       rpName,
       rpID: getRpID(ctx),
       userID: isoBase64URL.toBuffer(user.id),
       userName: user.email || user.name,
-      // Don't exclude credentials, so we can detect if one is already registered (optional)
+      excludeCredentials: existingPasskeys.map((pk) => ({
+        id: pk.credentialId,
+        transports: pk.transports as AuthenticatorTransportFuture[],
+      })),
       authenticatorSelection: {
         residentKey: "preferred",
         userVerification: "preferred",
@@ -104,16 +153,17 @@ router.post(
       verification = await verifyRegistrationResponse({
         response: body,
         expectedChallenge,
-        expectedOrigin: `${ctx.protocol}://${ctx.request.host}`, // Origin includes port
+        expectedOrigin: getExpectedOrigin(ctx),
         expectedRPID: getRpID(ctx),
       });
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err = toError(error);
       Logger.error("passkeys: Registration verification failed", err);
       throw ValidationError(err.message);
     }
 
     const { verified, registrationInfo } = verification;
+    const ZERO_AAGUID = "00000000-0000-0000-0000-000000000000";
 
     if (verified && registrationInfo) {
       const { credential, aaguid } = registrationInfo;
@@ -126,7 +176,7 @@ router.post(
       const userAgent = ctx.request.get("user-agent");
       const transports = body.response.transports || [];
 
-      // Check if already exists
+      // Check if already exists by credential ID
       const existing = await UserPasskey.findOne({
         where: { credentialId: credentialIdBase64 },
       });
@@ -143,6 +193,17 @@ router.post(
           aaguid,
         });
       } else {
+        // Check if user already has a passkey from the same authenticator
+        if (aaguid && aaguid !== ZERO_AAGUID) {
+          const duplicateDevice = await UserPasskey.findOne({
+            where: { userId: user.id, aaguid },
+          });
+
+          if (duplicateDevice) {
+            throw ValidationError("You already have a passkey on this device");
+          }
+        }
+
         await UserPasskey.createWithCtx(ctx, {
           userId: user.id,
           credentialId: credentialIdBase64,
@@ -163,6 +224,31 @@ router.post(
     }
   }
 );
+
+/**
+ * Resolves the login screen redirect for the desktop passkey entrypoint,
+ * normalizing an untrusted client query parameter to a known value.
+ *
+ * @param client - the raw client value from the request query.
+ * @returns the relative path to redirect the browser to.
+ */
+export const getPasskeyLoginRedirect = (
+  client: string | string[] | undefined
+): string => {
+  const normalized = client === Client.Desktop ? Client.Desktop : Client.Web;
+  return `/?method=passkey&client=${normalized}`;
+};
+
+/**
+ * Entry point for passkey login from the desktop app. The WebAuthn ceremony
+ * cannot run inside Electron's Chromium, so the desktop client opens this URL
+ * in the system browser. We forward to the login screen, which auto-starts the
+ * ceremony and returns the authenticated session via the outline:// deep link,
+ * mirroring the existing SSO desktop flow.
+ */
+router.get("passkey", (ctx: APIContext) => {
+  ctx.redirect(getPasskeyLoginRedirect(ctx.query.client));
+});
 
 router.post(
   "passkeys.generateAuthenticationOptions",
@@ -225,12 +311,18 @@ router.post(
     const user = passkey.user;
     const team = user.team;
 
+    if (!team.passkeysEnabled) {
+      throw AuthorizationError(
+        "Passkey authentication is not enabled for this team"
+      );
+    }
+
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
         response: body,
         expectedChallenge,
-        expectedOrigin: `${ctx.protocol}://${ctx.request.host}`,
+        expectedOrigin: getExpectedOrigin(ctx),
         expectedRPID: getRpID(ctx),
         credential: {
           id: passkey.credentialId,
@@ -240,7 +332,10 @@ router.post(
         },
       });
     } catch (err) {
-      Logger.error("passkeys: Authentication verification failed", err);
+      Logger.error(
+        "passkeys: Authentication verification failed",
+        toError(err)
+      );
       throw ValidationError("Passkey authentication failed. Please try again.");
     }
 

@@ -1,29 +1,26 @@
-import groupBy from "lodash/groupBy";
+import { groupBy } from "es-toolkit/compat";
 import { observer } from "mobx-react";
-import { BackIcon, SidebarIcon } from "outline-icons";
+import { BackIcon } from "outline-icons";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useHistory, useLocation } from "react-router-dom";
 import styled from "styled-components";
-import { metaDisplay } from "@shared/utils/keyboard";
 import Flex from "~/components/Flex";
 import Scrollable from "~/components/Scrollable";
 import useSettingsConfig from "~/hooks/useSettingsConfig";
 import useStores from "~/hooks/useStores";
 import isCloudHosted from "~/utils/isCloudHosted";
 import { settingsPath } from "~/utils/routeHelpers";
-import Tooltip from "../Tooltip";
 import Sidebar from "./Sidebar";
 import Header from "./components/Header";
 import HistoryNavigation from "./components/HistoryNavigation";
 import Section from "./components/Section";
 import SidebarButton from "./components/SidebarButton";
 import SidebarLink from "./components/SidebarLink";
-import ToggleButton from "./components/ToggleButton";
 import Version from "./components/Version";
 
 function SettingsSidebar() {
-  const { ui, integrations } = useStores();
+  const { integrations } = useStores();
   const { t } = useTranslation();
   const history = useHistory();
   const location = useLocation();
@@ -31,7 +28,7 @@ function SettingsSidebar() {
 
   const groupedConfig = groupBy(
     configs.filter((item) =>
-      item.group === "Integrations" && item.pluginId
+      item.group === t("Integrations") && item.pluginId
         ? integrations.findByService(item.pluginId)
         : true
     ),
@@ -43,27 +40,12 @@ function SettingsSidebar() {
   }, [history]);
 
   return (
-    <Sidebar>
-      <HistoryNavigation />
+    <Sidebar canCollapse={false}>
       <SidebarButton
         title={t("Return to App")}
         image={<StyledBackIcon />}
         onClick={returnToApp}
-      >
-        <Tooltip content={t("Toggle sidebar")} shortcut={`${metaDisplay}+.`}>
-          <ToggleButton
-            aria-label={
-              ui.sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")
-            }
-            position="bottom"
-            image={<SidebarIcon />}
-            onClick={() => {
-              ui.toggleCollapsedSidebar();
-              (document.activeElement as HTMLElement)?.blur();
-            }}
-          />
-        </Tooltip>
-      </SidebarButton>
+      />
 
       <Flex auto column>
         <Scrollable shadow>
@@ -76,7 +58,8 @@ function SettingsSidebar() {
                     to={item.path}
                     onClickIntent={item.preload}
                     active={
-                      item.path.startsWith(settingsPath("templates"))
+                      item.path.startsWith(settingsPath("templates")) ||
+                      item.path.startsWith(settingsPath("groups"))
                         ? location.pathname.startsWith(item.path)
                         : undefined
                     }
@@ -95,12 +78,17 @@ function SettingsSidebar() {
           )}
         </Scrollable>
       </Flex>
+      <HistoryNavigation />
     </Sidebar>
   );
 }
 
 const StyledBackIcon = styled(BackIcon)`
-  margin-left: 4px;
+  margin-inline-start: 4px;
+
+  [dir="rtl"] & {
+    transform: rotate(180deg);
+  }
 `;
 
 export default observer(SettingsSidebar);

@@ -1,20 +1,27 @@
 import emojiRegex from "emoji-regex";
-import { JSDOM } from "jsdom";
-import chunk from "lodash/chunk";
-import compact from "lodash/compact";
-import { EditorState } from "prosemirror-state";
-import { EditorView } from "prosemirror-view";
-import flatten from "lodash/flatten";
-import isMatch from "lodash/isMatch";
-import uniq from "lodash/uniq";
+import type { JSDOM } from "jsdom";
+import { chunk, isMatch } from "es-toolkit/compat";
+import { EditorState, type Plugin } from "prosemirror-state";
+import {
+  DecorationSet,
+  EditorView,
+  type DecorationSource,
+} from "prosemirror-view";
 import { Node, Fragment } from "prosemirror-model";
 import { renderToString } from "react-dom/server";
 import styled, { ServerStyleSheet, ThemeProvider } from "styled-components";
-import { prosemirrorToYDoc } from "y-prosemirror";
+import {
+  prosemirrorToYDoc,
+  updateYFragment,
+  yDocToProsemirrorJSON,
+} from "y-prosemirror";
 import * as Y from "yjs";
+import { toError, errToString } from "@shared/utils/error";
 import Diff from "@shared/editor/extensions/Diff";
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import type { ExtendedChange } from "@shared/editor/lib/ChangesetHelper";
+import textBetween from "@shared/editor/lib/textBetween";
+import { withTrailingNode } from "@shared/editor/lib/trailingNode";
 import EditorContainer from "@shared/editor/components/Styles";
 import GlobalStyles from "@shared/styles/globals";
 import light from "@shared/styles/theme";
@@ -24,12 +31,14 @@ import {
   attachmentRedirectRegex,
   ProsemirrorHelper as SharedProsemirrorHelper,
 } from "@shared/utils/ProsemirrorHelper";
+
 import parseDocumentSlug from "@shared/utils/parseDocumentSlug";
 import { isRTL } from "@shared/utils/rtl";
 import { isInternalUrl } from "@shared/utils/urls";
 import attachmentCreator from "@server/commands/attachmentCreator";
 import { plugins, schema, parser } from "@server/editor";
 import env from "@server/env";
+import { ValidationError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import { trace } from "@server/logging/tracing";
 import Attachment from "@server/models/Attachment";
@@ -52,6 +61,8 @@ export type HTMLOptions = {
   baseUrl?: string;
   /** Changes to highlight in the document */
   changes?: readonly ExtendedChange[];
+  /** CSP nonce to apply to injected inline scripts */
+  cspNonce?: string;
 };
 
 export type MentionAttrs = {
@@ -64,8 +75,32 @@ export type MentionAttrs = {
   unfurl?: UnfurlResponse[keyof UnfurlResponse];
 };
 
+const pluginsWithSafeDecorations = new WeakSet<Plugin>();
+
+function isDecorationSource(value: unknown): value is DecorationSource {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  if (!("forChild" in value) || typeof value.forChild !== "function") {
+    return false;
+  }
+
+  if ("members" in value && Array.isArray(value.members)) {
+    return value.members.every(
+      (member) =>
+        typeof member === "object" &&
+        member !== null &&
+        "localsInner" in member &&
+        typeof member.localsInner === "function"
+    );
+  }
+
+  return true;
+}
+
 @trace()
-export class ProsemirrorHelper {
+export class ProsemirrorHelper extends SharedProsemirrorHelper {
   /**
    * Returns the input text as a Y.Doc.
    *
@@ -73,15 +108,16 @@ export class ProsemirrorHelper {
    * @returns The content as a Y.Doc.
    */
   static toYDoc(input: string | ProsemirrorData, fieldName = "default"): Y.Doc {
-    if (typeof input === "object") {
-      return prosemirrorToYDoc(
-        ProsemirrorHelper.toProsemirror(input),
-        fieldName
-      );
+    const node =
+      typeof input === "object"
+        ? ProsemirrorHelper.toProsemirror(input)
+        : parser.parse(input);
+    if (!node) {
+      return new Y.Doc();
     }
-
-    const node = parser.parse(input);
-    return node ? prosemirrorToYDoc(node, fieldName) : new Y.Doc();
+    // Normalize to the editor's trailing-node form so the document opens without
+    // the editor inserting a trailing paragraph, which would be a spurious edit.
+    return prosemirrorToYDoc(withTrailingNode(node), fieldName);
   }
 
   /**
@@ -116,25 +152,18 @@ export class ProsemirrorHelper {
    */
   static parseMentions(doc: Node, options?: Partial<MentionAttrs>) {
     const mentions: MentionAttrs[] = [];
-
-    const isApplicableNode = (node: Node) => {
-      if (node.type.name !== "mention") {
-        return false;
-      }
-
-      if (
-        (options?.type && options.type !== node.attrs.type) ||
-        (options?.modelId && options.modelId !== node.attrs.modelId)
-      ) {
-        return false;
-      }
-
-      return !mentions.some((m) => m.id === node.attrs.id);
-    };
+    const seenIds = new Set<string>();
 
     doc.descendants((node: Node) => {
-      if (isApplicableNode(node)) {
-        mentions.push(node.attrs as MentionAttrs);
+      if (node.type.name === "mention") {
+        if (
+          !(options?.type && options.type !== node.attrs.type) &&
+          !(options?.modelId && options.modelId !== node.attrs.modelId) &&
+          !seenIds.has(node.attrs.id)
+        ) {
+          seenIds.add(node.attrs.id);
+          mentions.push(node.attrs as MentionAttrs);
+        }
         return false;
       }
 
@@ -155,31 +184,31 @@ export class ProsemirrorHelper {
    * @returns An array of document IDs
    */
   static parseDocumentIds(doc: Node) {
+    const seen = new Set<string>();
     const identifiers: string[] = [];
 
     doc.descendants((node: Node) => {
       if (
         node.type.name === "mention" &&
         node.attrs.type === MentionType.Document &&
-        !identifiers.includes(node.attrs.modelId)
+        !seen.has(node.attrs.modelId)
       ) {
+        seen.add(node.attrs.modelId);
         identifiers.push(node.attrs.modelId);
         return true;
       }
 
       if (node.type.name === "text") {
-        // get marks for text nodes
-        node.marks.forEach((mark) => {
-          // any of the marks identifiers?
+        for (const mark of node.marks) {
           if (mark.type.name === "link") {
             const slug = parseDocumentSlug(mark.attrs.href);
 
-            // don't return the same link more than once
-            if (slug && !identifiers.includes(slug)) {
+            if (slug && !seen.has(slug)) {
+              seen.add(slug);
               identifiers.push(slug);
             }
           }
-        });
+        }
       }
 
       if (!node.content.size) {
@@ -265,28 +294,6 @@ export class ProsemirrorHelper {
     return blockNode ? doc.copy(Fragment.fromArray([blockNode])) : undefined;
   }
 
-  /**
-   * Removes all marks from the node that match the given types.
-   *
-   * @param data The ProsemirrorData object to remove marks from
-   * @param marks The mark types to remove
-   * @returns The content with marks removed
-   */
-  static removeMarks(doc: Node | ProsemirrorData, marks: string[]) {
-    const json = "toJSON" in doc ? (doc.toJSON() as ProsemirrorData) : doc;
-
-    function removeMarksInner(node: ProsemirrorData) {
-      if (node.marks) {
-        node.marks = node.marks.filter((mark) => !marks.includes(mark.type));
-      }
-      if (node.content) {
-        node.content.forEach(removeMarksInner);
-      }
-      return node;
-    }
-    return removeMarksInner(json);
-  }
-
   static async replaceInternalUrls(
     doc: Node | ProsemirrorData,
     basePath: string
@@ -346,7 +353,7 @@ export class ProsemirrorHelper {
       },
     });
 
-    const mapping: Record<string, string> = {};
+    const mapping = new Map<string, string>();
 
     await Promise.all(
       attachments.map(async (attachment) => {
@@ -354,28 +361,44 @@ export class ProsemirrorHelper {
           attachment.key,
           expiresIn
         );
-        mapping[attachment.redirectUrl] = signedUrl;
+        mapping.set(attachment.redirectUrl, signedUrl);
       })
     );
 
     const json = doc.toJSON() as ProsemirrorData;
 
-    function getMapping(href: string) {
-      let relativeHref;
-
+    function toRelativeHref(href: string): string | undefined {
       try {
         const url = new URL(href);
-        relativeHref = url.toString().substring(url.origin.length);
+        return url.toString().substring(url.origin.length);
       } catch {
-        // Noop: Invalid url.
+        return undefined;
+      }
+    }
+
+    function getMapping(href: string) {
+      const signedUrl = mapping.get(href);
+      if (signedUrl) {
+        return signedUrl;
       }
 
-      for (const originalUrl of Object.keys(mapping)) {
-        if (
-          href.startsWith(originalUrl) ||
-          relativeHref?.startsWith(originalUrl)
-        ) {
-          return mapping[originalUrl];
+      const relativeHref = toRelativeHref(href);
+      if (relativeHref) {
+        const signedUrl = mapping.get(relativeHref);
+        if (signedUrl) {
+          return signedUrl;
+        }
+      }
+
+      // Extract attachment ID from URLs that may have extra query params
+      // (e.g. /api/attachments.redirect?id=<uuid>&size=2)
+      const regex = new RegExp(attachmentRedirectRegex.source, "i");
+      const match = regex.exec(relativeHref ?? href);
+      if (match?.groups?.id) {
+        const canonicalUrl = `/api/attachments.redirect?id=${match.groups.id}`;
+        const signedUrl = mapping.get(canonicalUrl);
+        if (signedUrl) {
+          return signedUrl;
         }
       }
 
@@ -384,13 +407,13 @@ export class ProsemirrorHelper {
 
     function replaceAttachmentUrls(node: ProsemirrorData) {
       if (node.attrs?.src) {
-        node.attrs.src = getMapping(String(node.attrs.src));
+        node.attrs.src = getMapping(node.attrs.src as string);
       } else if (node.attrs?.href) {
-        node.attrs.href = getMapping(String(node.attrs.href));
+        node.attrs.href = getMapping(node.attrs.href as string);
       } else if (node.marks) {
         node.marks.forEach((mark) => {
           if (mark.attrs?.href) {
-            mark.attrs.href = getMapping(String(mark.attrs.href));
+            mark.attrs.href = getMapping(mark.attrs.href as string);
           }
         });
       }
@@ -415,36 +438,32 @@ export class ProsemirrorHelper {
     const urls: string[] = [];
 
     doc.descendants((node) => {
-      node.marks.forEach((mark) => {
-        if (mark.type.name === "link") {
-          if (mark.attrs.href) {
-            urls.push(mark.attrs.href);
-          }
-        }
-      });
-      if (["image", "video"].includes(node.type.name)) {
-        if (node.attrs.src) {
-          urls.push(node.attrs.src);
+      for (const mark of node.marks) {
+        if (mark.type.name === "link" && mark.attrs.href) {
+          urls.push(mark.attrs.href);
         }
       }
-      if (node.type.name === "attachment") {
-        if (node.attrs.href) {
-          urls.push(node.attrs.href);
-        }
+
+      if (
+        (node.type.name === "image" || node.type.name === "video") &&
+        node.attrs.src
+      ) {
+        urls.push(node.attrs.src);
+      } else if (node.type.name === "attachment" && node.attrs.href) {
+        urls.push(node.attrs.href);
       }
     });
 
-    return uniq(
-      compact(
-        flatten(
-          urls.map((url) =>
-            [...url.matchAll(attachmentRedirectRegex)].map(
-              (match) => match.groups?.id
-            )
-          )
-        )
-      )
-    );
+    const ids = new Set<string>();
+    for (const url of urls) {
+      for (const match of url.matchAll(attachmentRedirectRegex)) {
+        if (match.groups?.id) {
+          ids.add(match.groups.id);
+        }
+      }
+    }
+
+    return [...ids];
   }
 
   /**
@@ -455,9 +474,12 @@ export class ProsemirrorHelper {
    * @param options Options for the HTML output
    * @returns The content as a HTML string
    */
-  public static toHTML(node: Node, options?: HTMLOptions) {
+  public static async toHTML(node: Node, options?: HTMLOptions) {
     let view;
     let cleanupEnv;
+
+    // Loaded lazily to keep jsdom off the startup path — only HTML export needs it.
+    const { JSDOM } = await import("jsdom");
 
     try {
       const sheet = new ServerStyleSheet();
@@ -475,13 +497,13 @@ export class ProsemirrorHelper {
           `
         : "article";
 
-      const rtl = isRTL(node.textContent);
+      const rtl = isRTL(node.textBetween(0, Math.min(node.content.size, 100)));
       const content = <div id="content" className="ProseMirror exported" />;
       const children = (
         <>
           {options?.title && <h1 dir={rtl ? "rtl" : "ltr"}>{options.title}</h1>}
           {options?.includeStyles !== false ? (
-            <EditorContainer dir={rtl ? "rtl" : "ltr"} rtl={rtl} staticHTML>
+            <EditorContainer dir={rtl ? "rtl" : "ltr"} $rtl={rtl} staticHTML>
               {content}
             </EditorContainer>
           ) : (
@@ -511,7 +533,10 @@ export class ProsemirrorHelper {
         );
         styleTags = sheet.getStyleTags();
       } catch (error) {
-        Logger.error("Failed to render styles on node HTML conversion", error);
+        Logger.error(
+          "Failed to render styles on node HTML conversion",
+          toError(error)
+        );
       } finally {
         sheet.seal();
       }
@@ -531,10 +556,39 @@ export class ProsemirrorHelper {
       const diffPlugins = options?.changes
         ? new Diff({ changes: options.changes }).plugins
         : [];
+      const editorPlugins = [...plugins, ...diffPlugins];
+
+      for (const plugin of plugins) {
+        if (
+          !plugin.props.decorations ||
+          pluginsWithSafeDecorations.has(plugin)
+        ) {
+          continue;
+        }
+
+        plugin.props.decorations = () => DecorationSet.empty;
+        pluginsWithSafeDecorations.add(plugin);
+      }
+
+      for (const plugin of diffPlugins) {
+        if (
+          !plugin.props.decorations ||
+          pluginsWithSafeDecorations.has(plugin)
+        ) {
+          continue;
+        }
+
+        const decorations = plugin.props.decorations.bind(plugin);
+        plugin.props.decorations = (state) => {
+          const result = decorations(state);
+          return isDecorationSource(result) ? result : DecorationSet.empty;
+        };
+        pluginsWithSafeDecorations.add(plugin);
+      }
 
       const state = EditorState.create({
         doc: node,
-        plugins: [...plugins, ...diffPlugins],
+        plugins: editorPlugins,
         schema,
       });
 
@@ -577,10 +631,16 @@ export class ProsemirrorHelper {
         const element = dom.window.document.createElement("script");
         element.setAttribute("type", "module");
 
+        if (options?.cspNonce) {
+          element.setAttribute("nonce", options.cspNonce);
+        }
+
         // Inject Mermaid script
         if (mermaidElements.length) {
           element.innerHTML = `
           import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+          import elkLayouts from 'https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk/dist/mermaid-layout-elk.esm.min.mjs';
+          mermaid.registerLayoutLoaders(elkLayouts);
           mermaid.initialize({
             startOnLoad: true,
             fontFamily: "inherit",
@@ -615,7 +675,7 @@ export class ProsemirrorHelper {
       try {
         view?.destroy();
       } catch (err) {
-        Logger.error("Error destroying ProseMirror view", err);
+        Logger.error("Error destroying ProseMirror view", toError(err));
       }
       cleanupEnv?.();
     }
@@ -768,36 +828,50 @@ export class ProsemirrorHelper {
     // Create a new document with the emoji removed from the text
     const json = doc.toJSON();
 
-    function removeEmojiFromNode(node: any): any {
+    function removeEmojiFromNode(
+      node: ProsemirrorData
+    ): ProsemirrorData | null {
       if (node.type === "text" && node.text && node.text.startsWith(emoji)) {
+        const text = node.text.slice(emoji.length);
+        // Removing the emoji can leave an empty text node (e.g. when the text
+        // node contained only the emoji). Prosemirror disallows empty text
+        // nodes, so drop the node entirely in that case.
+        if (!text) {
+          return null;
+        }
         return {
           ...node,
-          text: node.text.slice(emoji.length),
+          text,
         };
       }
       if (node.content) {
         let found = false;
+        const content: ProsemirrorData[] = [];
+        for (const child of node.content) {
+          if (found) {
+            content.push(child);
+            continue;
+          }
+          const result = removeEmojiFromNode(child);
+          if (result !== child) {
+            found = true;
+          }
+          if (result !== null) {
+            content.push(result);
+          }
+        }
         return {
           ...node,
-          content: node.content.map((child: any) => {
-            if (found) {
-              return child;
-            }
-            const result = removeEmojiFromNode(child);
-            if (result !== child) {
-              found = true;
-            }
-            return result;
-          }),
+          content,
         };
       }
       return node;
     }
 
-    const modifiedJson = removeEmojiFromNode(json);
+    const modifiedJson = removeEmojiFromNode(json as ProsemirrorData);
     return {
       emoji,
-      doc: Node.fromJSON(schema, modifiedJson),
+      doc: modifiedJson ? Node.fromJSON(schema, modifiedJson) : doc,
     };
   }
 
@@ -809,7 +883,7 @@ export class ProsemirrorHelper {
    * @returns A cleanup function to restore the global environment.
    */
   public static patchGlobalEnv(domWindow: JSDOM["window"]) {
-    const g = global as any;
+    const g = global as unknown as Record<string, unknown>;
 
     const globalParams = {
       window: g.window,
@@ -866,8 +940,8 @@ export class ProsemirrorHelper {
     doc: Node,
     user: User
   ): Promise<Node> {
-    const images = SharedProsemirrorHelper.getImages(doc);
-    const videos = SharedProsemirrorHelper.getVideos(doc);
+    const images = ProsemirrorHelper.getImages(doc);
+    const videos = ProsemirrorHelper.getVideos(doc);
     const nodes = [...images, ...videos];
 
     if (!nodes.length) {
@@ -920,7 +994,7 @@ export class ProsemirrorHelper {
             }
           } catch (err) {
             Logger.warn("Failed to download image for attachment", {
-              error: err.message,
+              error: errToString(err),
               src,
             });
           }
@@ -955,5 +1029,241 @@ export class ProsemirrorHelper {
     };
 
     return doc.copy(transformFragment(doc.content));
+  }
+
+  /**
+   * Applies a comment mark to a document's Yjs state at the first occurrence
+   * of `anchorText` in the document's plain text content.
+   *
+   * Block boundaries are represented as a single newline; matches that span
+   * blocks apply the mark across the union of affected text ranges.
+   *
+   * `prefix` and `suffix` may be supplied to disambiguate when `anchorText`
+   * appears multiple times: the first occurrence whose immediately preceding
+   * text equals `prefix` and immediately following text equals `suffix` is
+   * used. Empty or omitted prefix/suffix imposes no constraint on that side.
+   *
+   * @param params.docState The current Yjs document state.
+   * @param params.anchorText The plain text substring to anchor the comment to.
+   * @param params.commentId The comment identifier.
+   * @param params.userId The user identifier.
+   * @param params.prefix Optional plain text immediately preceding the match.
+   * @param params.suffix Optional plain text immediately following the match.
+   * @returns Updated Yjs state, or null if the mark cannot be applied.
+   * @throws ValidationError when no match satisfies the prefix/suffix.
+   */
+  static applyCommentMarkByText({
+    docState,
+    anchorText,
+    commentId,
+    userId,
+    prefix,
+    suffix,
+  }: {
+    docState: Uint8Array;
+    anchorText: string;
+    commentId: string;
+    userId: string;
+    prefix?: string;
+    suffix?: string;
+  }): Buffer | null {
+    const yjsDoc = new Y.Doc();
+    Y.applyUpdate(yjsDoc, docState);
+    const doc = Node.fromJSON(schema, yDocToProsemirrorJSON(yjsDoc, "default"));
+    const range = ProsemirrorHelper.findTextRange(doc, anchorText, {
+      prefix,
+      suffix,
+    });
+
+    if (!range) {
+      throw ValidationError("anchorText was not found in the document");
+    }
+
+    try {
+      return ProsemirrorHelper.applyCommentMarkAtRange(
+        yjsDoc,
+        doc,
+        range.from,
+        range.to,
+        commentId,
+        userId
+      );
+    } catch (error) {
+      Logger.error("Error applying comment mark by text", error as Error);
+      return null;
+    }
+  }
+
+  private static applyCommentMarkAtRange(
+    yjsDoc: Y.Doc,
+    doc: Node,
+    rangeStart: number,
+    rangeEnd: number,
+    commentId: string,
+    userId: string
+  ): Buffer | null {
+    const docSize = doc.content.size;
+    if (rangeStart < 0 || rangeEnd > docSize || rangeStart > rangeEnd) {
+      Logger.warn("Invalid position range for comment anchor", {
+        rangeStart,
+        rangeEnd,
+        docSize,
+      });
+      return null;
+    }
+
+    const initialState = EditorState.create({
+      doc,
+      schema,
+    });
+
+    const markToAdd = schema.marks.comment.create({
+      id: commentId,
+      userId,
+      draft: false,
+    });
+    const stateTransform = initialState.tr.addMark(
+      rangeStart,
+      rangeEnd,
+      markToAdd
+    );
+    const transformedState = initialState.apply(stateTransform);
+
+    // Mutate the existing yjsDoc in place so the resulting state is a
+    // continuation of the original document — same client IDs, same operation
+    // history — rather than a fresh Y.Doc whose content would merge as
+    // duplicates against any client still holding the original state.
+    const yFragment = yjsDoc.get("default", Y.XmlFragment) as Y.XmlFragment;
+    if (!yFragment.doc) {
+      throw new Error("yFragment.doc not found");
+    }
+    updateYFragment(yFragment.doc, yFragment, transformedState.doc, {
+      mapping: new Map(),
+      isOMark: new Map(),
+    });
+
+    return Buffer.from(Y.encodeStateAsUpdate(yjsDoc));
+  }
+
+  /**
+   * Locates an occurrence of `needle` in the document's plain text and
+   * returns the matching ProseMirror position range, or null if no match.
+   * Plain text is built using the editor's `textBetween` so leaf nodes
+   * with `spec.leafText` (e.g. mentions) participate in matching.
+   *
+   * When `prefix` or `suffix` is provided, the first occurrence whose
+   * immediately preceding / following plain text matches is selected.
+   * Empty or omitted values impose no constraint on that side.
+   *
+   * Atom nodes (whose plain content comes from `leafText`) cannot be
+   * sliced into; matches that fall inside an atom are clamped to the
+   * atom's full PM range.
+   */
+  private static findTextRange(
+    doc: Node,
+    needle: string,
+    options: { prefix?: string; suffix?: string } = {}
+  ): { from: number; to: number } | null {
+    if (!needle.length) {
+      return null;
+    }
+
+    const plain = textBetween(doc, 0, doc.content.size);
+
+    // Mirror textBetween's traversal so segment.plainStart aligns with the
+    // characters in `plain`. If textBetween's algorithm changes, this walk
+    // must change with it.
+    type Segment = {
+      plainStart: number;
+      pmFrom: number;
+      pmTo: number;
+      length: number;
+      isAtom: boolean;
+    };
+    const segments: Segment[] = [];
+    let plainPos = 0;
+    let first = true;
+
+    doc.nodesBetween(0, doc.content.size, (node, pos) => {
+      let nodeText = "";
+      let isLeafText = false;
+
+      if (node.type.spec.leafText) {
+        nodeText = node.type.spec.leafText(node);
+        isLeafText = true;
+      } else if (node.isText) {
+        nodeText = node.text ?? "";
+      }
+
+      if (node.isBlock && ((node.isLeaf && nodeText) || node.isTextblock)) {
+        if (first) {
+          first = false;
+        } else {
+          plainPos += 1; // block separator '\n'
+        }
+      }
+
+      if (nodeText) {
+        segments.push({
+          plainStart: plainPos,
+          pmFrom: pos,
+          pmTo: pos + node.nodeSize,
+          length: nodeText.length,
+          isAtom: isLeafText,
+        });
+        plainPos += nodeText.length;
+      }
+
+      return !isLeafText;
+    });
+
+    const prefix = options.prefix ?? "";
+    const suffix = options.suffix ?? "";
+
+    let startIdx = -1;
+    let searchFrom = 0;
+    while (true) {
+      const candidate = plain.indexOf(needle, searchFrom);
+      if (candidate === -1) {
+        return null;
+      }
+      const candidateEnd = candidate + needle.length;
+      const prefixOk =
+        prefix.length === 0 ||
+        (candidate >= prefix.length &&
+          plain.substring(candidate - prefix.length, candidate) === prefix);
+      const suffixOk =
+        suffix.length === 0 ||
+        (candidateEnd + suffix.length <= plain.length &&
+          plain.substring(candidateEnd, candidateEnd + suffix.length) ===
+            suffix);
+      if (prefixOk && suffixOk) {
+        startIdx = candidate;
+        break;
+      }
+      searchFrom = candidate + 1;
+    }
+
+    const endIdx = startIdx + needle.length;
+
+    let from: number | null = null;
+    for (const s of segments) {
+      if (s.plainStart <= startIdx && startIdx < s.plainStart + s.length) {
+        from = s.isAtom ? s.pmFrom : s.pmFrom + (startIdx - s.plainStart);
+        break;
+      }
+    }
+    let to: number | null = null;
+    for (const s of segments) {
+      if (s.plainStart < endIdx && endIdx <= s.plainStart + s.length) {
+        to = s.isAtom ? s.pmTo : s.pmFrom + (endIdx - s.plainStart);
+      }
+    }
+
+    if (from === null || to === null) {
+      return null;
+    }
+
+    return { from, to };
   }
 }

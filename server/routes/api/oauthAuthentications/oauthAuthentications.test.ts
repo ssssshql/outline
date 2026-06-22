@@ -32,11 +32,7 @@ describe("oauthAuthentications.list", () => {
       scope: ["read"],
     });
 
-    const res = await server.post("/api/oauthAuthentications.list", {
-      body: {
-        token: user.getJwtToken(),
-      },
-    });
+    const res = await server.post("/api/oauthAuthentications.list", user);
 
     const body = await res.json();
     expect(res.status).toEqual(200);
@@ -63,11 +59,7 @@ describe("oauthAuthentications.list", () => {
       scope: ["read"],
     });
 
-    const res = await server.post("/api/oauthAuthentications.list", {
-      body: {
-        token: user.getJwtToken(),
-      },
-    });
+    const res = await server.post("/api/oauthAuthentications.list", user);
 
     const body = await res.json();
     expect(res.status).toEqual(200);
@@ -81,6 +73,19 @@ describe("oauthAuthentications.delete", () => {
     const body = await res.json();
     expect(res.status).toEqual(401);
     expect(body).toMatchSnapshot();
+  });
+
+  it("should return 400 if oauthClientId is not a valid uuid", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+
+    const res = await server.post("/api/oauthAuthentications.delete", user, {
+      body: {
+        oauthClientId: "",
+      },
+    });
+
+    expect(res.status).toEqual(400);
   });
 
   it("should delete all authentications for a client without scope", async () => {
@@ -99,9 +104,8 @@ describe("oauthAuthentications.delete", () => {
       scope: ["read"],
     });
 
-    const res = await server.post("/api/oauthAuthentications.delete", {
+    const res = await server.post("/api/oauthAuthentications.delete", user, {
       body: {
-        token: user.getJwtToken(),
         oauthClientId: oauthClient.id,
       },
     });
@@ -140,9 +144,8 @@ describe("oauthAuthentications.delete", () => {
       scope: ["write"],
     });
 
-    const res = await server.post("/api/oauthAuthentications.delete", {
+    const res = await server.post("/api/oauthAuthentications.delete", user, {
       body: {
-        token: user.getJwtToken(),
         oauthClientId: oauthClient.id,
         scope: ["read"],
       },
@@ -179,9 +182,8 @@ describe("oauthAuthentications.delete", () => {
       scope: ["read"],
     });
 
-    await server.post("/api/oauthAuthentications.delete", {
+    await server.post("/api/oauthAuthentications.delete", user, {
       body: {
-        token: user.getJwtToken(),
         oauthClientId: oauthClient.id,
         scope: "read",
       },

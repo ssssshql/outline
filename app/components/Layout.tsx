@@ -1,3 +1,4 @@
+import { AnimatePresence } from "framer-motion";
 import { observer } from "mobx-react";
 import * as React from "react";
 import { Helmet } from "react-helmet-async";
@@ -7,6 +8,7 @@ import breakpoint from "styled-components-breakpoint";
 import { s } from "@shared/styles";
 import Flex from "~/components/Flex";
 import { LoadingIndicatorBar } from "~/components/LoadingIndicator";
+import { useRightSidebarContent } from "~/components/RightSidebarContext";
 import SkipNavContent from "~/components/SkipNavContent";
 import SkipNavLink from "~/components/SkipNavLink";
 import env from "~/env";
@@ -19,16 +21,15 @@ type Props = {
   title?: string;
   /** Left sidebar content. */
   sidebar?: React.ReactNode;
-  /** Right sidebar content. */
-  sidebarRight?: React.ReactNode;
 };
 
 const Layout = React.forwardRef(function Layout_(
-  { title, children, sidebar, sidebarRight }: Props,
+  { title, children, sidebar }: Props,
   ref: React.RefObject<HTMLDivElement>
 ) {
   const { ui } = useStores();
   const sidebarCollapsed = !sidebar || ui.sidebarIsClosed;
+  const sidebarRight = useRightSidebarContent();
 
   return (
     <Container column auto ref={ref}>
@@ -47,6 +48,7 @@ const Layout = React.forwardRef(function Layout_(
         <Content
           auto
           justify="center"
+          role="main"
           $isResizing={ui.sidebarIsResizing}
           $sidebarCollapsed={sidebarCollapsed}
           $hasSidebar={!!sidebar}
@@ -54,14 +56,14 @@ const Layout = React.forwardRef(function Layout_(
             sidebarCollapsed
               ? undefined
               : {
-                  marginLeft: `${ui.sidebarWidth}px`,
+                  marginInlineStart: `${ui.sidebarWidth}px`,
                 }
           }
         >
           {children}
         </Content>
 
-        {sidebarRight}
+        <AnimatePresence initial={false}>{sidebarRight}</AnimatePresence>
       </Container>
     </Container>
   );
@@ -84,21 +86,21 @@ type ContentProps = {
 const Content = styled(Flex)<ContentProps>`
   margin: 0;
   transition: ${(props) =>
-    props.$isResizing ? "none" : `margin-left 100ms ease-out`};
+    props.$isResizing ? "none" : `margin-inline-start 100ms ease-out`};
 
   @media print {
     margin: 0 !important;
   }
 
   ${breakpoint("mobile", "tablet")`
-    margin-left: 0 !important;
+    margin-inline-start: 0 !important;
   `}
 
   ${breakpoint("tablet")`
     ${(props: ContentProps) =>
       props.$hasSidebar &&
       props.$sidebarCollapsed &&
-      `margin-left: ${props.theme.sidebarCollapsedWidth}px;`}
+      `margin-inline-start: ${props.theme.sidebarCollapsedWidth}px;`}
   `};
 `;
 

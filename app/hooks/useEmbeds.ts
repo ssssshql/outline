@@ -1,9 +1,11 @@
-import find from "lodash/find";
+import { find } from "es-toolkit/compat";
 import { useEffect, useMemo } from "react";
+import { toError } from "@shared/utils/error";
 import embeds from "@shared/editor/embeds";
-import { IntegrationType } from "@shared/types";
+import { IntegrationType, TeamPreference } from "@shared/types";
 import type Integration from "~/models/Integration";
 import Logger from "~/utils/Logger";
+import useCurrentTeam from "./useCurrentTeam";
 import useStores from "./useStores";
 
 /**
@@ -14,6 +16,7 @@ import useStores from "./useStores";
  */
 export default function useEmbeds(loadIfMissing = false) {
   const { integrations } = useStores();
+  const team = useCurrentTeam({ rejectOnEmpty: false });
 
   useEffect(() => {
     async function fetchEmbedIntegrations() {
@@ -22,7 +25,7 @@ export default function useEmbeds(loadIfMissing = false) {
           type: IntegrationType.Embed,
         });
       } catch (err) {
-        Logger.error("Failed to fetch embed integrations", err);
+        Logger.error("Failed to fetch embed integrations", toError(err));
       }
     }
 
@@ -30,6 +33,9 @@ export default function useEmbeds(loadIfMissing = false) {
       void fetchEmbedIntegrations();
     }
   }, [integrations, loadIfMissing]);
+
+  const disabledEmbeds =
+    (team?.getPreference(TeamPreference.DisabledEmbeds) as string[]) || [];
 
   return useMemo(
     () =>
@@ -42,8 +48,11 @@ export default function useEmbeds(loadIfMissing = false) {
           e.settings = integration.settings;
         }
 
+        e.disabled = disabledEmbeds.includes(e.id);
+
         return e;
       }),
-    [integrations.orderedData]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [integrations.orderedData, team?.preferences]
   );
 }

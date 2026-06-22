@@ -1,11 +1,12 @@
-import debounce from "lodash/debounce";
+import { debounce } from "es-toolkit/compat";
 import { observer } from "mobx-react";
 import { ShieldIcon } from "outline-icons";
 import { useState } from "react";
 import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { toast } from "sonner";
-import { TeamPreference, EmailDisplay } from "@shared/types";
+import { errToString } from "@shared/utils/error";
+import { CommentingAccess, TeamPreference, EmailDisplay } from "@shared/types";
 import ConfirmationDialog from "~/components/ConfirmationDialog";
 import Heading from "~/components/Heading";
 import type { Option } from "~/components/InputSelect";
@@ -25,7 +26,6 @@ function Security() {
 
   const [data, setData] = useState({
     sharing: team.sharing,
-    documentEmbeds: team.documentEmbeds,
     defaultUserRole: team.defaultUserRole,
     memberCollectionCreate: team.memberCollectionCreate,
     memberTeamCreate: team.memberTeamCreate,
@@ -72,6 +72,28 @@ function Security() {
     [t]
   );
 
+  const commentingOptions: Option[] = React.useMemo(
+    () =>
+      [
+        {
+          type: "item",
+          label: t("Members"),
+          value: CommentingAccess.Members,
+        },
+        {
+          type: "item",
+          label: t("Members and guests"),
+          value: CommentingAccess.Everyone,
+        },
+        {
+          type: "item",
+          label: t("No one"),
+          value: CommentingAccess.None,
+        },
+      ] satisfies Option[],
+    [t]
+  );
+
   const showSuccessMessage = React.useMemo(
     () =>
       debounce(() => {
@@ -87,7 +109,7 @@ function Security() {
         await team.save(newData);
         showSuccessMessage();
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     },
     [team, showSuccessMessage]
@@ -103,13 +125,6 @@ function Security() {
   const handleSharingChange = React.useCallback(
     async (checked: boolean) => {
       await saveData({ sharing: checked });
-    },
-    [saveData]
-  );
-
-  const handleDocumentEmbedsChange = React.useCallback(
-    async (checked: boolean) => {
-      await saveData({ documentEmbeds: checked });
     },
     [saveData]
   );
@@ -173,6 +188,17 @@ function Security() {
       const preferences = {
         ...team.preferences,
         [TeamPreference.EmailDisplay]: emailDisplay,
+      };
+      await saveData({ preferences });
+    },
+    [saveData, team.preferences]
+  );
+
+  const handleCommentingChange = React.useCallback(
+    async (commenting: string) => {
+      const preferences = {
+        ...team.preferences,
+        [TeamPreference.Commenting]: commenting,
       };
       await saveData({ preferences });
     },
@@ -266,7 +292,7 @@ function Security() {
             options={userRoleOptions}
             onChange={handleDefaultRoleChange}
             label={t("Default role")}
-            hideLabel
+            labelHidden
             short
           />
         </SettingRow>
@@ -328,19 +354,6 @@ function Security() {
         />
       </SettingRow>
       <SettingRow
-        label={t("Rich service embeds")}
-        name="documentEmbeds"
-        description={t(
-          "Links to supported services are shown as rich embeds within your documents"
-        )}
-      >
-        <Switch
-          id="documentEmbeds"
-          checked={data.documentEmbeds}
-          onChange={handleDocumentEmbedsChange}
-        />
-      </SettingRow>
-      <SettingRow
         label={t("Email address visibility")}
         name={TeamPreference.EmailDisplay}
         description={t(
@@ -352,7 +365,24 @@ function Security() {
           options={emailDisplayOptions}
           onChange={handleEmailDisplayChange}
           label={t("Email address visibility")}
-          hideLabel
+          labelHidden
+          short
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("Commenting")}
+        name={TeamPreference.Commenting}
+        description={t("Controls who can add comments to documents")}
+      >
+        <InputSelect
+          value={
+            team.getPreference(TeamPreference.Commenting) ||
+            CommentingAccess.Members
+          }
+          options={commentingOptions}
+          onChange={handleCommentingChange}
+          label={t("Commenting")}
+          labelHidden
           short
         />
       </SettingRow>

@@ -24,19 +24,24 @@ type ParsePageOutput = ImportTaskOutput[number] & {
 export default class NotionAPIImportTask extends APIImportTask<IntegrationService.Notion> {
   private skippableErrorMessages = [
     "Database retrievals do not support linked databases",
-    "does not contain any data sources accessible by this API bot", // error msg for linked database views
+    "does not contain any data sources accessible by this API bot", // error msg for linked database views,
+    "Databases with multiple data sources are not supported in this API version", // https://github.com/outline/outline/issues/11573#issuecomment-3993691460
   ];
 
   /**
-   * Process the Notion import task.
+   * Process a Notion page-phase import task.
    * This fetches data from Notion and converts it to task output.
    *
    * @param importTask ImportTask model to process.
    * @returns Promise with output that resolves once processing has completed.
    */
-  protected async process(
+  protected async processPage(
     importTask: ImportTask<IntegrationService.Notion>
   ): Promise<ProcessOutput<IntegrationService.Notion>> {
+    if (!importTask.import.integrationId) {
+      throw new Error("Notion import is missing integrationId");
+    }
+
     const integration = await Integration.scope("withAuthentication").findByPk(
       importTask.import.integrationId,
       { rejectOnEmpty: true }
@@ -44,9 +49,10 @@ export default class NotionAPIImportTask extends APIImportTask<IntegrationServic
 
     const client = new NotionClient(integration.authentication.token);
 
-    const parsedPages = await Promise.all(
-      importTask.input.map(async (item) => this.processPage({ item, client }))
-    );
+    const parsedPages: (ParsePageOutput | null)[] = [];
+    for (const item of importTask.input) {
+      parsedPages.push(await this.parsePage({ item, client }));
+    }
 
     // Filter out any null results (from pages/databases that couldn't be accessed)
     const validParsedPages = parsedPages.filter(Boolean) as ParsePageOutput[];
@@ -54,7 +60,7 @@ export default class NotionAPIImportTask extends APIImportTask<IntegrationServic
     const taskOutput: ImportTaskOutput = validParsedPages.map((parsedPage) => ({
       externalId: parsedPage.externalId,
       title: parsedPage.title,
-      emoji: parsedPage.emoji,
+      icon: parsedPage.icon,
       content: parsedPage.content,
       author: parsedPage.author,
       createdAt: parsedPage.createdAt,
@@ -94,7 +100,7 @@ export default class NotionAPIImportTask extends APIImportTask<IntegrationServic
    * @param client Notion client.
    * @returns Promise of parsed page output that resolves when the task is scheduled.
    */
-  private async processPage({
+  private async parsePage({
     item,
     client,
   }: {
@@ -110,13 +116,14 @@ export default class NotionAPIImportTask extends APIImportTask<IntegrationServic
     try {
       // Convert Notion database to an empty page with "pages in database" as its children.
       if (item.type === PageType.Database) {
-        const { pages, ...databaseInfo } = await client.fetchDatabase(
+        const { pages, emoji, ...databaseInfo } = await client.fetchDatabase(
           item.externalId,
           { titleMaxLength }
         );
 
         return {
           ...databaseInfo,
+          icon: emoji,
           externalId: item.externalId,
           content: ProsemirrorHelper.getEmptyDocument() as ProsemirrorDoc,
           collectionExternalId,
@@ -127,12 +134,14 @@ export default class NotionAPIImportTask extends APIImportTask<IntegrationServic
         };
       }
 
-      const { blocks, ...pageInfo } = await client.fetchPage(item.externalId, {
-        titleMaxLength,
-      });
+      const { blocks, emoji, ...pageInfo } = await client.fetchPage(
+        item.externalId,
+        { titleMaxLength }
+      );
 
       return {
         ...pageInfo,
+        icon: emoji,
         externalId: item.externalId,
         content: NotionConverter.page({ children: blocks } as NotionPage),
         collectionExternalId,

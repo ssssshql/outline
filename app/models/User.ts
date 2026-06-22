@@ -58,7 +58,23 @@ class User extends ParanoidModel implements Searchable {
   role: UserRole;
 
   @observable
-  lastActiveAt: string;
+  protected _lastActiveAt: string;
+
+  /**
+   * The last time the user was active. For the currently signed-in user, this
+   * always returns the current date so they always appear as recently active.
+   */
+  @computed
+  get lastActiveAt(): string {
+    if (this.store.rootStore.auth?.currentUserId === this.id) {
+      return new Date(now(60000)).toISOString();
+    }
+    return this._lastActiveAt;
+  }
+
+  set lastActiveAt(value: string) {
+    this._lastActiveAt = value;
+  }
 
   @observable
   isSuspended: boolean;
@@ -231,10 +247,14 @@ class User extends ParanoidModel implements Searchable {
    * @param key The UserPreference key to retrieve
    * @returns The value
    */
-  getPreference(key: UserPreference, defaultValue = false): boolean {
-    return (
-      this.preferences?.[key] ?? UserPreferenceDefaults[key] ?? defaultValue
-    );
+  getPreference<K extends UserPreference>(
+    key: K,
+    defaultValue?: UserPreferences[K]
+  ): NonNullable<UserPreferences[K]> {
+    return (this.preferences?.[key] ??
+      UserPreferenceDefaults[key] ??
+      defaultValue ??
+      false) as NonNullable<UserPreferences[K]>;
   }
 
   /**
@@ -243,7 +263,11 @@ class User extends ParanoidModel implements Searchable {
    * @param key The UserPreference key to retrieve
    * @param value The value to set
    */
-  setPreference(key: UserPreference, value: boolean) {
+  @action
+  setPreference<K extends UserPreference>(
+    key: K,
+    value: NonNullable<UserPreferences[K]>
+  ) {
     this.preferences = {
       ...this.preferences,
       [key]: value,

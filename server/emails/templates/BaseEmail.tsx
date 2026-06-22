@@ -2,10 +2,13 @@ import type { EmailAddress } from "addressparser";
 import addressparser from "addressparser";
 import type Bull from "bull";
 import invariant from "invariant";
+import { t as i18nT } from "i18next";
 import { subMinutes } from "date-fns";
 import type { Node } from "prosemirror-model";
+import { toError } from "@shared/utils/error";
 import { randomString } from "@shared/random";
 import { TeamPreference } from "@shared/types";
+import { unicodeCLDRtoBCP47 } from "@shared/utils/date";
 import { Day } from "@shared/utils/time";
 import mailer from "@server/emails/mailer";
 import env from "@server/env";
@@ -31,6 +34,8 @@ export enum EmailMessageCategory {
 export interface EmailProps {
   /** The email address being sent to. */
   to: string | null;
+  /** The language of the receiving user in CLDR format (e.g. "en_US"). */
+  language?: string | null;
   /** The notification that triggered the email, if any. */
   notification?: Notification;
 }
@@ -151,7 +156,7 @@ export default abstract class BaseEmail<
     let subject = this.subject(data);
     if (notification) {
       if (notification.createdAt < subMinutes(new Date(), 30)) {
-        subject = `Delayed notification: ${subject}`;
+        subject = `${this.t("Delayed notification")}: ${subject}`;
       }
     }
 
@@ -173,6 +178,7 @@ export default abstract class BaseEmail<
         text: this.renderAsText(data),
         headCSS: this.headCSS?.(data),
         unsubscribeUrl: this.unsubscribeUrl?.(data),
+        tags: { category: this.category, template: templateName },
       });
       Metrics.increment("email.sent", {
         templateName,
@@ -189,7 +195,11 @@ export default abstract class BaseEmail<
         notification.emailedAt = new Date();
         await notification.save();
       } catch (err) {
-        Logger.error(`Failed to update notification`, err, this.metadata);
+        Logger.error(
+          `Failed to update notification`,
+          toError(err),
+          this.metadata
+        );
       }
     }
   }
@@ -201,6 +211,10 @@ export default abstract class BaseEmail<
     );
 
     const parsedFrom = addressparser(env.SMTP_FROM_EMAIL)[0];
+    invariant(
+      parsedFrom?.address?.includes("@"),
+      `SMTP_FROM_EMAIL is not a valid email address: "${env.SMTP_FROM_EMAIL}"`
+    );
     const domain = parsedFrom.address.split("@")[1];
     const customFromName = this.fromName?.(props);
 
@@ -217,7 +231,21 @@ export default abstract class BaseEmail<
   }
 
   private pixel(notification: Notification) {
-    return <img src={notification.pixelUrl} width="1" height="1" />;
+    return <img src={notification.pixelUrl} alt="" width="1" height="1" />;
+  }
+
+  /**
+   * Translate a string using the receiving user's language preference.
+   *
+   * @param key The translation key (plain English string).
+   * @param options Optional interpolation values.
+   * @returns The translated string.
+   */
+  protected t(key: string, options?: Record<string, unknown>): string {
+    return i18nT(key, {
+      ...options,
+      lng: unicodeCLDRtoBCP47(this.props.language ?? env.DEFAULT_LANGUAGE),
+    }) as string;
   }
 
   /**
@@ -312,7 +340,7 @@ export default abstract class BaseEmail<
       await ProsemirrorHelper.processMentions(node)
     );
 
-    let content = ProsemirrorHelper.toHTML(processedNode, {
+    let content = await ProsemirrorHelper.toHTML(processedNode, {
       centered: false,
     });
 

@@ -1,3 +1,4 @@
+import { m } from "framer-motion";
 import { observer } from "mobx-react";
 import { darken } from "polished";
 import * as React from "react";
@@ -49,6 +50,9 @@ function CommentThread({
   collapseNumDisplayed = 3,
 }: Props) {
   const [scrollOnMount] = React.useState(focused && !window.location.hash);
+  // Whether to play the entrance animation, captured once at mount so that
+  // submitting the thread (which flips isNew) does not change the animation.
+  const [animateIn] = React.useState(thread.isNew);
   const { editor, setFocusedCommentId } = useDocumentContext();
   const { comments } = useStores();
   const topRef = React.useRef<HTMLDivElement>(null);
@@ -92,9 +96,14 @@ function CommentThread({
   });
 
   useOnClickOutside(topRef, (event) => {
+    const target = event.target as HTMLElement;
     if (
       focused &&
-      !(event.target as HTMLElement).classList.contains("comment") &&
+      !target.classList.contains("comment") &&
+      // Clicking another thread switches focus to it directly via its own
+      // click handler, so skip deselecting here to avoid a flash of the
+      // deselected state (and the new comment form) in between.
+      !target.closest("[data-comment-thread]") &&
       event.defaultPrevented === false
     ) {
       setFocusedCommentId(null);
@@ -217,69 +226,78 @@ function CommentThread({
   return (
     <Thread
       ref={topRef}
+      data-comment-thread
+      layout="position"
+      transition={{ layout: { duration: 0.2, ease: "easeOut" } }}
       $focused={focused}
       $recessed={recessed}
-      $dir={document.dir}
       onClick={handleClickThread}
     >
-      {commentsInThread.map((comment, index) => {
-        if (collapse !== null) {
-          if (index === collapse.begin) {
-            return renderShowMore(collapse);
-          } else if (index > collapse.begin && index <= collapse.final) {
-            return null;
+      {/* The entrance transform lives on an inner element so it does not
+          conflict with the layout projection transform on Thread, which
+          would otherwise skew the thread during layout animations. */}
+      <ThreadInner
+        initial={animateIn ? { opacity: 0, y: 10 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
+      >
+        {commentsInThread.map((comment, index) => {
+          if (collapse !== null) {
+            if (index === collapse.begin) {
+              return renderShowMore(collapse);
+            } else if (index > collapse.begin && index <= collapse.final) {
+              return null;
+            }
           }
-        }
 
-        const firstOfAuthor =
-          index === 0 ||
-          (collapse && index === collapse.final + 1) ||
-          comment.createdById !== commentsInThread[index - 1].createdById;
-        const lastOfAuthor =
-          index === commentsInThread.length - 1 ||
-          comment.createdById !== commentsInThread[index + 1].createdById;
+          const firstOfAuthor =
+            index === 0 ||
+            (collapse && index === collapse.final + 1) ||
+            comment.createdById !== commentsInThread[index - 1].createdById;
+          const lastOfAuthor =
+            index === commentsInThread.length - 1 ||
+            comment.createdById !== commentsInThread[index + 1].createdById;
 
-        return (
-          <CommentThreadItem
-            highlightedText={index === 0 ? highlightedText : undefined}
-            comment={comment}
-            onDelete={editor?.removeComment}
-            onUpdate={editor?.updateComment}
-            key={comment.id}
-            firstOfThread={index === 0}
-            lastOfThread={index === commentsInThread.length - 1 && !draft}
-            canReply={focused && can.comment}
-            firstOfAuthor={firstOfAuthor}
-            lastOfAuthor={lastOfAuthor}
-            previousCommentCreatedAt={commentsInThread[index - 1]?.createdAt}
-            dir={document.dir}
-            forceEdit={editingCommentIds.has(comment.id)}
-            onEditStart={() => handleCommentEditStart(comment.id)}
-            onEditEnd={() => handleCommentEditEnd(comment.id)}
-          />
-        );
-      })}
-
-      <ResizingHeightContainer hideOverflow={false} ref={replyRef}>
-        {(focused || draft || commentsInThread.length === 0) && canReply && (
-          <Fade timing={100}>
-            <CommentForm
-              onSubmit={handleSubmit}
-              onSaveDraft={onSaveDraft}
-              draft={draft}
-              documentId={document.id}
-              thread={thread}
-              standalone={commentsInThread.length === 0}
-              dir={document.dir}
-              autoFocus={autoFocus}
-              highlightedText={
-                commentsInThread.length === 0 ? highlightedText : undefined
-              }
-              onUpArrowAtStart={handleUpArrowAtStart}
+          return (
+            <CommentThreadItem
+              highlightedText={index === 0 ? highlightedText : undefined}
+              comment={comment}
+              onDelete={editor?.removeComment}
+              onUpdate={editor?.updateComment}
+              key={comment.id}
+              firstOfThread={index === 0}
+              lastOfThread={index === commentsInThread.length - 1 && !draft}
+              canReply={focused && can.comment}
+              firstOfAuthor={firstOfAuthor}
+              lastOfAuthor={lastOfAuthor}
+              previousCommentCreatedAt={commentsInThread[index - 1]?.createdAt}
+              forceEdit={editingCommentIds.has(comment.id)}
+              onEditStart={() => handleCommentEditStart(comment.id)}
+              onEditEnd={() => handleCommentEditEnd(comment.id)}
             />
-          </Fade>
-        )}
-      </ResizingHeightContainer>
+          );
+        })}
+
+        <ResizingHeightContainer hideOverflow={false} ref={replyRef}>
+          {(focused || draft || commentsInThread.length === 0) && canReply && (
+            <Fade timing={100}>
+              <CommentForm
+                onSubmit={handleSubmit}
+                onSaveDraft={onSaveDraft}
+                draft={draft}
+                documentId={document.id}
+                thread={thread}
+                standalone={commentsInThread.length === 0}
+                autoFocus={autoFocus}
+                highlightedText={
+                  commentsInThread.length === 0 ? highlightedText : undefined
+                }
+                onUpArrowAtStart={handleUpArrowAtStart}
+              />
+            </Fade>
+          )}
+        </ResizingHeightContainer>
+      </ThreadInner>
       {!focused && !recessed && !draft && canReply && (
         <Reply onClick={setAutoFocusOn}>{t("Reply")}…</Reply>
       )}
@@ -298,23 +316,22 @@ const Reply = styled.button`
   cursor: var(--pointer);
   transition: opacity 100ms ease-out;
   position: absolute;
-  text-align: left;
+  text-align: start;
   width: 100%;
   bottom: -30px;
-  left: 32px;
+  inset-inline-start: 32px;
 
   ${breakpoint("tablet")`
     opacity: 0;
   `}
 `;
 
-const ShowMore = styled.div<{ $dir?: "rtl" | "ltr" }>`
+const ShowMore = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1px;
-  margin-left: ${(props) => (props.$dir === "rtl" ? 0 : 32)}px;
-  margin-right: ${(props) => (props.$dir !== "rtl" ? 0 : 32)}px;
+  margin-inline-start: 32px;
   padding: 8px 12px;
   color: ${s("textTertiary")};
   background: ${(props) => darken(0.015, props.theme.backgroundSecondary)};
@@ -331,14 +348,13 @@ const ShowMore = styled.div<{ $dir?: "rtl" | "ltr" }>`
   }
 `;
 
-const Thread = styled.div<{
+const Thread = styled(m.div)<{
   $focused: boolean;
   $recessed: boolean;
-  $dir?: "rtl" | "ltr";
 }>`
   margin: 12px 12px 32px;
-  margin-right: ${(props) => (props.$dir !== "rtl" ? "18px" : "12px")};
-  margin-left: ${(props) => (props.$dir === "rtl" ? "18px" : "12px")};
+  margin-inline-end: 18px;
+  margin-inline-start: 12px;
   position: relative;
   transition: opacity 100ms ease-out;
 
@@ -355,5 +371,7 @@ const Thread = styled.div<{
       cursor: default;
     `}
 `;
+
+const ThreadInner = styled(m.div)``;
 
 export default observer(CommentThread);

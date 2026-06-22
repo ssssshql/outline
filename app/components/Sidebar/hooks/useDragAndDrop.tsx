@@ -1,12 +1,11 @@
 import fractionalIndex from "fractional-index";
-import { StarredIcon } from "outline-icons";
 import * as React from "react";
 import type { ConnectDragSource } from "react-dnd";
 import { useDrag, useDrop } from "react-dnd";
 import { getEmptyImage } from "react-dnd-html5-backend";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { useTheme } from "styled-components";
+import { errToString } from "@shared/utils/error";
 import Icon from "@shared/components/Icon";
 import type { NavigationNode } from "@shared/types";
 import type Collection from "~/models/Collection";
@@ -24,6 +23,12 @@ import { useSidebarLabelAndIcon } from "./useSidebarLabelAndIcon";
 export type DragObject = NavigationNode & {
   depth: number;
   collectionId: string;
+  /**
+   * Whether the drag ghost should stay tethered to the sidebar. Defaults to
+   * tethered when unset — the placeholder only lets the ghost follow the
+   * cursor when this is explicitly `false` (e.g. drags from a document list).
+   */
+  constrainToSidebar?: boolean;
 };
 
 function useHover(
@@ -68,11 +73,8 @@ export function useDragStar(
   star: Star
 ): [{ isDragging: boolean }, ConnectDragSource] {
   const id = star.id;
-  const theme = useTheme();
-  const { label: title, icon } = useSidebarLabelAndIcon(
-    star,
-    <StarredIcon color={theme.yellow} />
-  );
+  const { label: title, icon } = useSidebarLabelAndIcon(star);
+
   const [{ isDragging }, draggableRef, preview] = useDrag({
     type: "star",
     item: () => ({ id, title, icon }),
@@ -110,6 +112,12 @@ export function useDropToCreateStar(getIndex?: () => string) {
   >({
     accept,
     drop: async (item, monitor) => {
+      // A more specific drop target (e.g. a reorder cursor) has already
+      // handled this drop, so avoid creating a duplicate star.
+      if (monitor.didDrop()) {
+        return;
+      }
+
       const type = monitor.getItemType();
       let model;
 
@@ -127,7 +135,7 @@ export function useDropToCreateStar(getIndex?: () => string) {
       );
     },
     collect: (monitor) => ({
-      isOverCursor: !!monitor.isOver(),
+      isOverCursor: !!monitor.isOver({ shallow: true }),
       isDragging: accept.includes(String(monitor.getItemType())),
     }),
   });
@@ -168,12 +176,16 @@ export function useDropToReorderStar(getIndex?: () => string) {
  * @param depth The depth of the node in the sidebar.
  * @param document The related Document model.
  * @param isEditing Whether the sidebar item is currently being edited.
+ * @param constrainToSidebar Whether the drag ghost should stay tethered to the
+ * sidebar. Defaults to true; pass false when dragging from outside the sidebar
+ * (e.g. a document list) so the ghost follows the cursor.
  */
 export function useDragDocument(
   node: NavigationNode,
   depth: number,
   document?: Document,
-  isEditing?: boolean
+  isEditing?: boolean,
+  constrainToSidebar = true
 ) {
   const icon = document?.icon || node.icon || node.emoji;
   const color = document?.color || node.color;
@@ -193,6 +205,7 @@ export function useDragDocument(
           <Icon initial={initial} value={icon} color={color} />
         ) : undefined,
         collectionId: document?.collectionId || "",
+        constrainToSidebar,
       }) as DragObject,
     canDrag: () => !!document?.isActive && !isEditing,
     collect: (monitor) => ({
@@ -263,7 +276,7 @@ export function useDropToChangeCollection(
               )
             );
           } else {
-            toast.error(err.message);
+            toast.error(errToString(err));
           }
         }
       }
@@ -358,7 +371,7 @@ export function useDropToReparentDocument(
               )
             );
           } else {
-            toast.error(err.message);
+            toast.error(errToString(err));
           }
         }
       }
@@ -471,7 +484,7 @@ export function useDropToReorderDocument(
                 })
               );
             } else {
-              toast.error(err.message);
+              toast.error(errToString(err));
             }
           }
         }
@@ -495,21 +508,12 @@ export function useDragMembership(
   const id = membership.id;
   const { label: title, icon } = useSidebarLabelAndIcon(membership);
 
-  const [{ isDragging }, draggableRef, preview] = useDrag<
-    DragObject,
-    Promise<void>,
-    { isDragging: boolean }
-  >({
+  const [{ isDragging }, draggableRef, preview] = useDrag({
     type:
       membership instanceof UserMembership
         ? "userMembership"
         : "groupMembership",
-    item: () =>
-      ({
-        id,
-        title,
-        icon,
-      }) as DragObject,
+    item: () => ({ id, title, icon }),
     collect: (monitor) => ({
       isDragging: !!monitor.isDragging(),
     }),
@@ -617,7 +621,7 @@ export function useDropToUnpublish() {
           })
         );
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     },
     canDrop: (item) => {

@@ -1,26 +1,34 @@
 import dns from "node:dns";
 import Router from "koa-router";
 import { traceFunction } from "@server/logging/tracing";
+import isUUID from "validator/lib/isUUID";
 import { MentionType, UnfurlResourceType } from "@shared/types";
 import { getBaseDomain, parseDomain } from "@shared/utils/domains";
 import parseDocumentSlug from "@shared/utils/parseDocumentSlug";
 import parseMentionUrl from "@shared/utils/parseMentionUrl";
-import { isInternalUrl } from "@shared/utils/urls";
-import { NotFoundError, ValidationError } from "@server/errors";
+import { isInternalUrl, parseShareIdFromUrl } from "@shared/utils/urls";
+import {
+  AuthenticationError,
+  NotFoundError,
+  ValidationError,
+} from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import validate from "@server/middlewares/validate";
 import { Document, Share, Team, User, Group, GroupUser } from "@server/models";
 import { authorize, can } from "@server/policies";
+import { loadPublicShare } from "@server/commands/shareLoader";
 import presentUnfurl from "@server/presenters/unfurl";
 import type { APIContext, Unfurl } from "@server/types";
 import { CacheHelper, type CacheResult } from "@server/utils/CacheHelper";
+import { RedisPrefixHelper } from "@server/utils/RedisPrefixHelper";
 import { Hook, PluginManager } from "@server/utils/PluginManager";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import {
   checkEmbeddability,
   type EmbedCheckResult,
 } from "@server/utils/embeds";
+import { getTeamFromContext } from "@server/utils/passport";
 import * as T from "./schema";
 import { MAX_AVATAR_DISPLAY } from "@shared/constants";
 import { Day } from "@shared/utils/time";
@@ -31,12 +39,53 @@ const plugins = PluginManager.getHooks(Hook.UnfurlProvider);
 router.post(
   "urls.unfurl",
   rateLimiter(RateLimiterStrategy.OneThousandPerHour),
-  auth(),
+  auth({ optional: true }),
   validate(T.UrlsUnfurlSchema),
   async (ctx: APIContext<T.UrlsUnfurlReq>) => {
     const { url, documentId } = ctx.input.body;
-    const { user: actor } = ctx.state.auth;
     const urlObj = new URL(url);
+
+    // Public share URLs – does not require authentication
+    if (isInternalUrl(url)) {
+      const shareId = parseShareIdFromUrl(url);
+
+      if (shareId) {
+        const actor = ctx.state.auth.user;
+        // teamId is only needed when the share identifier is a slug, not a UUID
+        let teamId: string | undefined = actor?.teamId;
+        if (!teamId && !isUUID(shareId)) {
+          const teamFromCtx = await getTeamFromContext(ctx, {
+            includeOAuthState: false,
+          });
+          teamId = teamFromCtx?.id;
+        }
+        const previewDocumentId = parseDocumentSlug(url);
+        const { share, document } = await loadPublicShare({
+          id: shareId,
+          documentId: previewDocumentId,
+          teamId,
+        });
+
+        if (!document) {
+          ctx.response.status = 204;
+          return;
+        }
+
+        ctx.body = await presentUnfurl({
+          type: UnfurlResourceType.Document,
+          document,
+          viewer: actor,
+          url: `${share.canonicalUrl}/doc/${document.url.replace("/doc/", "")}`,
+        });
+        return;
+      }
+    }
+
+    // Everything below requires authentication
+    const { user: actor } = ctx.state.auth;
+    if (!actor) {
+      throw AuthenticationError();
+    }
 
     // Mentions
     if (urlObj.protocol === "mention:") {
@@ -112,13 +161,13 @@ router.post(
     if (isInternalUrl(url) || parseDomain(url).host === actor.team.domain) {
       const previewDocumentId = parseDocumentSlug(url);
       if (previewDocumentId) {
-        const document = previewDocumentId
-          ? await Document.findByPk(previewDocumentId, { userId: actor.id })
-          : undefined;
-        if (!document) {
-          throw NotFoundError("Document does not exist");
+        const document = await Document.findByPk(previewDocumentId, {
+          userId: actor.id,
+        });
+        if (!document || !can(actor, "read", document)) {
+          ctx.response.status = 204;
+          return;
         }
-        authorize(actor, "read", document);
 
         ctx.body = await presentUnfurl({
           type: UnfurlResourceType.Document,
@@ -127,6 +176,7 @@ router.post(
         });
         return;
       }
+
       ctx.response.status = 204;
       return;
     }
@@ -134,7 +184,7 @@ router.post(
     // External resources
     // Use getDataOrSet which handles distributed locking to prevent thundering herd
     // when multiple clients request the same URL simultaneously
-    const cacheKey = CacheHelper.getUnfurlKey(actor.teamId, url);
+    const cacheKey = RedisPrefixHelper.getUnfurlKey(actor.teamId, url);
     const defaultCacheExpiry = 3600;
 
     const unfurlResult = await CacheHelper.getDataOrSet<
@@ -186,7 +236,7 @@ router.post(
     const { url } = ctx.input.body;
 
     const result = await CacheHelper.getDataOrSet<EmbedCheckResult>(
-      CacheHelper.getEmbedCheckKey(url),
+      RedisPrefixHelper.getEmbedCheckKey(url),
       () => checkEmbeddability(url),
       Day.seconds
     );
@@ -206,11 +256,7 @@ router.post(
     const { hostname } = ctx.input.body;
 
     const [team, share] = await Promise.all([
-      Team.findOne({
-        where: {
-          domain: hostname,
-        },
-      }),
+      Team.findByDomain(hostname),
       Share.findOne({
         where: {
           domain: hostname,
@@ -232,7 +278,7 @@ router.post(
         });
       });
     } catch (err) {
-      if (err.code === "ENOTFOUND") {
+      if (err instanceof Error && "code" in err && err.code === "ENOTFOUND") {
         throw NotFoundError("No CNAME record found");
       }
 

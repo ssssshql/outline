@@ -91,6 +91,15 @@ function KeyboardShortcuts({ defaultQuery = "" }: Props) {
           {
             shortcut: (
               <>
+                <Key symbol>{metaDisplay}</Key> + <Key symbol>⇧</Key> +{" "}
+                <Key>l</Key>
+              </>
+            ),
+            label: t("Toggle theme"),
+          },
+          {
+            shortcut: (
+              <>
                 <Key symbol>{metaDisplay}</Key> + <Key>f</Key>
               </>
             ),
@@ -111,19 +120,20 @@ function KeyboardShortcuts({ defaultQuery = "" }: Props) {
           {
             shortcut: (
               <>
+                <Key symbol>{metaDisplay}</Key> + <Key symbol>{altDisplay}</Key>{" "}
+                + <Key>p</Key>
+              </>
+            ),
+            label: t("Present document"),
+          },
+          {
+            shortcut: (
+              <>
                 <Key symbol>{metaDisplay}</Key> + <Key symbol>⇧</Key> +{" "}
                 <Key>p</Key>
               </>
             ),
             label: t("Publish document and exit"),
-          },
-          {
-            shortcut: (
-              <>
-                <Key symbol>{metaDisplay}</Key> + <Key>s</Key>
-              </>
-            ),
-            label: t("Save document"),
           },
           {
             shortcut: (
@@ -556,6 +566,7 @@ function KeyboardShortcuts({ defaultQuery = "" }: Props) {
     <Flex column>
       <StickySearch>
         <InputSearch
+          round
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           value={searchTerm}
@@ -623,11 +634,11 @@ const List = styled.dl`
 `;
 
 const Keys = styled.dt`
-  float: right;
+  float: inline-end;
   width: 45%;
   margin: 0 0 10px;
-  clear: left;
-  text-align: right;
+  clear: inline-start;
+  text-align: end;
   font-size: 12px;
   color: ${s("textSecondary")};
   display: flex;
@@ -636,7 +647,7 @@ const Keys = styled.dt`
 `;
 
 const Label = styled.dd`
-  float: left;
+  float: inline-start;
   width: 55%;
   margin: 0 0 10px;
   display: flex;

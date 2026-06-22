@@ -6,14 +6,15 @@ import { useRouteMatch } from "react-router-dom";
 import styled from "styled-components";
 import Text from "@shared/components/Text";
 import { richExtensions, withComments } from "@shared/editor/nodes";
-import { TeamPreference } from "@shared/types";
 import { colorPalette } from "@shared/utils/collections";
 import Comment from "~/models/Comment";
 import type Document from "~/models/Document";
+import type Template from "~/models/Template";
 import type { RefHandle } from "~/components/ContentEditable";
 import { useDocumentContext } from "~/components/DocumentContext";
 import type { Props as EditorProps } from "~/components/Editor";
 import Editor from "~/components/Editor";
+import type { Editor as SharedEditor } from "~/editor";
 import Flex from "~/components/Flex";
 import Time from "~/components/Time";
 import { withUIExtensions } from "~/editor/extensions";
@@ -33,7 +34,7 @@ import { decodeURIComponentSafe } from "~/utils/urls";
 import MultiplayerEditor from "./AsyncMultiplayerEditor";
 import DocumentMeta from "./DocumentMeta";
 import DocumentTitle from "./DocumentTitle";
-import first from "lodash/first";
+import { first } from "es-toolkit/compat";
 import { getLangFor } from "~/utils/language";
 import useShare from "@shared/hooks/useShare";
 
@@ -43,7 +44,7 @@ type Props = Omit<EditorProps, "editorStyle"> & {
   onChangeTitle: (title: string) => void;
   onChangeIcon: (icon: string | null, color: string | null) => void;
   id: string;
-  document: Document;
+  document: Document | Template;
   isDraft: boolean;
   multiplayer?: boolean;
   onSave: (options: {
@@ -51,14 +52,15 @@ type Props = Omit<EditorProps, "editorStyle"> & {
     autosave?: boolean;
     publish?: boolean;
   }) => void;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 };
 
 /**
  * The main document editor includes an editable title with metadata below it,
  * and support for commenting.
  */
-function DocumentEditor(props: Props, ref: React.RefObject<any>) {
+function DocumentEditor(props: Props, ref: React.ForwardedRef<SharedEditor>) {
+  const editorRef = React.useRef<SharedEditor>(null);
   const titleRef = React.useRef<RefHandle>(null);
   const { t } = useTranslation();
   const match = useRouteMatch();
@@ -69,7 +71,7 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
   const team = useCurrentTeam({ rejectOnEmpty: false });
   const sidebarContext = useLocationSidebarContext();
   const params = useQuery();
-  const { shareId } = useShare();
+  const { shareId, showLastUpdated } = useShare();
   const {
     document,
     onChangeTitle,
@@ -81,18 +83,18 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
     ...rest
   } = props;
   const can = usePolicy(document);
-  const commentingEnabled = !!team?.getPreference(TeamPreference.Commenting);
+  const commentingEnabled = !!team?.commentingEnabled;
 
   const iconColor = document.color ?? (first(colorPalette) as string);
   const childRef = React.useRef<HTMLDivElement>(null);
   const focusAtStart = React.useCallback(() => {
-    if (ref.current) {
-      ref.current.focusAtStart();
+    if (editorRef.current) {
+      editorRef.current.focusAtStart();
     }
-  }, [ref]);
+  }, []);
 
   React.useEffect(() => {
-    if (focusedComment) {
+    if (focusedComment && focusedComment.documentId === document.id) {
       const viewingResolved = params.get("resolved") === "";
       if (
         (focusedComment.isResolved && !viewingResolved) ||
@@ -100,9 +102,9 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
       ) {
         setFocusedCommentId(focusedComment.id);
       }
-      ui.set({ commentsExpanded: true });
+      ui.set({ rightSidebar: "comments" });
     }
-  }, [focusedComment, ui, document.id, params]);
+  }, [focusedComment, ui, document.id, params, setFocusedCommentId]);
 
   // Save document when blurring title, but delay so that if clicking on a
   // button this is allowed to execute first.
@@ -112,21 +114,21 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
 
   const handleGoToNextInput = React.useCallback(
     (insertParagraph: boolean) => {
-      if (insertParagraph && ref.current) {
-        const { view } = ref.current;
+      if (insertParagraph && editorRef.current) {
+        const { view } = editorRef.current;
         const { dispatch, state } = view;
         dispatch(state.tr.insert(0, state.schema.nodes.paragraph.create()));
       }
 
       focusAtStart();
     },
-    [focusAtStart, ref]
+    [focusAtStart]
   );
 
   // Create a Comment model in local store when a comment mark is created, this
   // acts as a local draft before submission.
   const handleDraftComment = React.useCallback(
-    (commentId: string, createdById: string) => {
+    (commentId: string, createdById: string, options?: { focus: boolean }) => {
       if (comments.get(commentId) || createdById !== user?.id) {
         return;
       }
@@ -142,9 +144,12 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
       );
       comment.id = commentId;
       comments.add(comment);
-      setFocusedCommentId(commentId);
+
+      if (options?.focus) {
+        setFocusedCommentId(commentId);
+      }
     },
-    [comments, user?.id, props.id]
+    [comments, user?.id, props.id, setFocusedCommentId]
   );
 
   // Soft delete the Comment model when associated mark is totally removed.
@@ -171,7 +176,7 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
     () => ({
       padding: "0 32px",
       margin: "0 -32px",
-      paddingBottom: `calc(50vh - ${childOffsetHeight}px)`,
+      paddingBottom: `calc(30vh - ${childOffsetHeight}px)`,
     }),
     [childOffsetHeight]
   );
@@ -208,30 +213,26 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
         placeholder={t("Untitled")}
       />
       {shareId ? (
-        document.updatedAt ? (
+        showLastUpdated && document.updatedAt ? (
           <SharedMeta type="tertiary">
             {t("Last updated")} <Time dateTime={document.updatedAt} addSuffix />
           </SharedMeta>
         ) : null
-      ) : (
+      ) : !rest.template ? (
         <DocumentMeta
-          document={document}
-          to={
-            shareId
-              ? undefined
-              : {
-                  pathname:
-                    match.path === matchDocumentHistory
-                      ? documentPath(document)
-                      : documentHistoryPath(document),
-                  state: { sidebarContext },
-                }
-          }
+          document={document as Document}
+          to={{
+            pathname:
+              match.path === matchDocumentHistory
+                ? documentPath(document as Document)
+                : documentHistoryPath(document as Document),
+            state: { sidebarContext },
+          }}
           rtl={direction === "rtl"}
         />
-      )}
+      ) : null}
       <EditorComponent
-        ref={mergeRefs([ref, handleRefChanged])}
+        ref={mergeRefs([ref, editorRef, handleRefChanged])}
         lang={getLangFor(document.language)}
         autoFocus={!!document.title && !props.defaultValue}
         placeholder={t("Type '/' to insert, or start writing…")}
@@ -249,7 +250,9 @@ function DocumentEditor(props: Props, ref: React.RefObject<any>) {
           commentingEnabled && can.comment ? handleRemoveComment : undefined
         }
         onOpenCommentsSidebar={
-          commentingEnabled ? ui.toggleComments : undefined
+          commentingEnabled
+            ? () => ui.set({ rightSidebar: "comments" })
+            : undefined
         }
         onInit={handleInit}
         onDestroy={handleDestroy}

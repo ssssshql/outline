@@ -1,9 +1,10 @@
 import { m } from "framer-motion";
 import type { LocationDescriptor } from "history";
-import isEqual from "lodash/isEqual";
+import { isEqual } from "es-toolkit/compat";
 import queryString from "query-string";
 import * as React from "react";
-import styled, { useTheme } from "styled-components";
+import styled, { css, useTheme } from "styled-components";
+import breakpoint from "styled-components-breakpoint";
 import { s, hover } from "@shared/styles";
 import NavLink from "~/components/NavLink";
 
@@ -46,7 +47,7 @@ interface ButtonProps extends BaseProps {
 
 type Props = LinkProps | ButtonProps;
 
-const tabStyles = `
+const tabStyles = css`
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -54,8 +55,11 @@ const tabStyles = `
   font-size: 14px;
   cursor: var(--pointer);
   user-select: none;
-  margin-right: 24px;
-  padding: 6px 0;
+  padding: 12px 0;
+
+  ${breakpoint("tablet")`
+    padding: 6px 0;
+  `};
 `;
 
 const TabLink = styled(NavLink)`
@@ -95,6 +99,13 @@ const transition = {
   damping: 30,
 };
 
+/** Restrict shared layout animation to the X axis only. */
+const horizontalOnly = (transform: Record<string, string>, generated: string) =>
+  generated.replace(
+    /translate3d\(([^,]+),\s*[^,]+,\s*([^)]+)\)/,
+    "translate3d($1, 0px, $2)"
+  );
+
 const Tab: React.FC<Props> = (props: Props) => {
   const { children, exact, exactQueryString } = props;
   const theme = useTheme();
@@ -112,6 +123,7 @@ const Tab: React.FC<Props> = (props: Props) => {
             layoutId="underline"
             initial={false}
             transition={transition}
+            transformTemplate={horizontalOnly}
           />
         )}
       </TabButton>
@@ -140,6 +152,7 @@ const Tab: React.FC<Props> = (props: Props) => {
                 layoutId="underline"
                 initial={false}
                 transition={transition}
+                transformTemplate={horizontalOnly}
               />
             )}
         </>

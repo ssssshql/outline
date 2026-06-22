@@ -1,23 +1,27 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
-import filter from "lodash/filter";
-import includes from "lodash/includes";
-import isEqual from "lodash/isEqual";
+import { filter, includes, isEqual } from "es-toolkit/compat";
 import { DisclosureIcon } from "outline-icons";
 import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation, Trans } from "react-i18next";
 import styled from "styled-components";
 import { randomString } from "@shared/random";
-import { TeamPreference } from "@shared/types";
+import { WebhookSubscriptionValidation } from "@shared/validations";
 import type WebhookSubscription from "~/models/WebhookSubscription";
 import Button from "~/components/Button";
 import Input from "~/components/Input";
 import Text from "~/components/Text";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useMobile from "~/hooks/useMobile";
+import isCloudHosted from "~/utils/isCloudHosted";
 import Flex from "@shared/components/Flex";
 
 const WEBHOOK_EVENTS = {
+  attachments: [
+    "attachments.create",
+    "attachments.update",
+    "attachments.delete",
+  ],
   users: [
     "users.create",
     "users.signin",
@@ -99,6 +103,35 @@ function generateSigningSecret() {
   return `ol_whs_${randomString(32)}`;
 }
 
+type EventCheckboxProps = {
+  label: string;
+  value: string;
+  style?: React.CSSProperties;
+  register: ReturnType<typeof useForm<FormData>>["register"];
+};
+
+function EventCheckbox({
+  label,
+  value,
+  register,
+  ...rest
+}: EventCheckboxProps) {
+  const checkbox = (
+    <>
+      <input type="checkbox" defaultValue={value} {...register("events", {})} />
+      <Text>{label}</Text>
+    </>
+  );
+
+  if (value === "*") {
+    return (
+      <GroupEventCheckboxLabel {...rest}>{checkbox}</GroupEventCheckboxLabel>
+    );
+  }
+
+  return <EventCheckboxLabel {...rest}>{checkbox}</EventCheckboxLabel>;
+}
+
 function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
   const { t } = useTranslation();
   const team = useCurrentTeam();
@@ -121,6 +154,9 @@ function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
   });
 
   const events = watch("events");
+  const url = watch("url");
+  const showInsecureUrlWarning =
+    !isCloudHosted && typeof url === "string" && url.startsWith("http://");
   const selectedGroups = filter(events, (e) => !e.includes("."));
   const isAllEventSelected = includes(events, "*");
   const filteredEvents = filter(events, (e) => {
@@ -170,35 +206,6 @@ function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
   const verb = webhookSubscription ? t("Update") : t("Create");
   const inProgressVerb = webhookSubscription ? t("Updating") : t("Creating");
 
-  function EventCheckbox({
-    label,
-    value,
-    ...rest
-  }: {
-    label: string;
-    value: string;
-    style?: React.CSSProperties;
-  }) {
-    const checkbox = (
-      <>
-        <input
-          type="checkbox"
-          defaultValue={value}
-          {...register("events", {})}
-        />
-        <Text>{label}</Text>
-      </>
-    );
-
-    if (value === "*") {
-      return (
-        <GroupEventCheckboxLabel {...rest}>{checkbox}</GroupEventCheckboxLabel>
-      );
-    }
-
-    return <EventCheckboxLabel {...rest}>{checkbox}</EventCheckboxLabel>;
-  }
-
   return (
     <form onSubmit={formHandleSubmit(handleSubmit)}>
       <Text as="p" type="secondary">
@@ -221,10 +228,21 @@ function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
         <Input
           required
           flex
-          pattern="https://.*"
+          pattern={isCloudHosted ? "https://.*" : "https?://.*"}
+          maxLength={WebhookSubscriptionValidation.maxUrlLength}
           placeholder="https://…"
           label={t("URL")}
-          {...register("url", { required: true })}
+          error={
+            showInsecureUrlWarning
+              ? t(
+                  "Webhook delivery over http is insecure, use https if possible"
+                )
+              : undefined
+          }
+          {...register("url", {
+            required: true,
+            maxLength: WebhookSubscriptionValidation.maxUrlLength,
+          })}
         />
         <Input
           flex
@@ -246,15 +264,12 @@ function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
         label={t("All events")}
         value="*"
         style={{ marginLeft: 24 }}
+        register={register}
       />
       <FieldSet disabled={isAllEventSelected}>
         <Flex column>
           {Object.entries(WEBHOOK_EVENTS)
-            .filter(
-              ([group]) =>
-                group !== "comment" ||
-                team.getPreference(TeamPreference.Commenting)
-            )
+            .filter(([group]) => group !== "comment" || team.commentingEnabled)
             .map(([group, groupEvents], i) => {
               const { ref: registerRef, ...registerProps } = register(
                 "events",
@@ -290,6 +305,7 @@ function WebhookSubscriptionForm({ handleSubmit, webhookSubscription }: Props) {
                             label={event}
                             value={event}
                             key={event}
+                            register={register}
                           />
                         ))}
                       </FieldSet>

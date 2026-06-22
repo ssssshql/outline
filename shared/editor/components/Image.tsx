@@ -3,10 +3,10 @@ import type { EditorView } from "prosemirror-view";
 import * as React from "react";
 import styled from "styled-components";
 import { useTranslation } from "react-i18next";
-import find from "lodash/find";
+import { find } from "es-toolkit/compat";
 import Flex from "../../components/Flex";
 import { s } from "../../styles";
-import { isExternalUrl, sanitizeUrl } from "../../utils/urls";
+import { isExternalUrl, sanitizeImageSrc } from "../../utils/urls";
 import { EditorStyleHelper } from "../styles/EditorStyleHelper";
 import type { ComponentProps } from "../types";
 import { ResizeLeft, ResizeRight } from "./ResizeHandle";
@@ -50,7 +50,6 @@ const Image = (props: Props) => {
     height: node.attrs.height ?? naturalHeight,
     naturalWidth,
     naturalHeight,
-    gridSnap: 5,
     onChangeSize,
     ref,
   });
@@ -68,7 +67,7 @@ const Image = (props: Props) => {
     }
   }, [node.attrs.width]);
 
-  const sanitizedSrc = sanitizeUrl(src);
+  const sanitizedSrc = sanitizeImageSrc(src);
   const linkMarkType = props.view.state.schema.marks.link;
   const imgLink =
     find(node.attrs.marks ?? [], (mark) => mark.type === linkMarkType.name)
@@ -115,10 +114,42 @@ const Image = (props: Props) => {
     }
   };
 
+  const actions = [
+    isExternalUrl(src) && (
+      <Button key="open" onClick={handleOpen} aria-label={t("Open")}>
+        <GlobeIcon />
+      </Button>
+    ),
+    imgLink && (
+      <Button
+        key="zoom"
+        // `mousedown` on ancestor `div.ProseMirror` was preventing the `onClick` handler from firing
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={props.onZoomIn}
+        aria-label={t("Zoom in")}
+      >
+        <ZoomInIcon />
+      </Button>
+    ),
+    !isEditable && (
+      <Button
+        key="download"
+        onClick={handleDownload}
+        // `mousedown` on ancestor `div.ProseMirror` was preventing the `onClick` handler from firing
+        onMouseDown={(e) => e.stopPropagation()}
+        aria-label={t("Download")}
+        disabled={isDownloading}
+      >
+        <DownloadIcon />
+      </Button>
+    ),
+  ].filter(Boolean);
+
   return (
     <div contentEditable={false} className={className} ref={ref}>
       <ImageWrapper
         isFullWidth={isFullWidth}
+        $dragging={!!dragging}
         className={
           isSelected || dragging
             ? "image-wrapper ProseMirror-selectednode"
@@ -126,38 +157,14 @@ const Image = (props: Props) => {
         }
         style={widthStyle}
       >
-        {!dragging && width > 60 && isDownloadable && (
+        {!dragging && width > 60 && isDownloadable && actions.length > 0 && (
           <Actions>
-            {isExternalUrl(src) && (
-              <>
-                <Button onClick={handleOpen} aria-label={t("Open")}>
-                  <GlobeIcon />
-                </Button>
-                <Separator height={24} />
-              </>
-            )}
-            {imgLink && (
-              <>
-                <Button
-                  // `mousedown` on ancestor `div.ProseMirror` was preventing the `onClick` handler from firing
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={props.onZoomIn}
-                  aria-label={t("Zoom in")}
-                >
-                  <ZoomInIcon />
-                </Button>
-                <Separator height={24} />
-              </>
-            )}
-            <Button
-              onClick={handleDownload}
-              // `mousedown` on ancestor `div.ProseMirror` was preventing the `onClick` handler from firing
-              onMouseDown={(e) => e.stopPropagation()}
-              aria-label={t("Download")}
-              disabled={isDownloading}
-            >
-              <DownloadIcon />
-            </Button>
+            {actions.map((action, index) => (
+              <React.Fragment key={index}>
+                {index > 0 && <Separator height={24} />}
+                {action}
+              </React.Fragment>
+            ))}
           </Actions>
         )}
         {error ? (
@@ -211,6 +218,7 @@ const Image = (props: Props) => {
         )}
         {!loaded && width && height && (
           <img
+            alt=""
             style={{
               ...widthStyle,
               display: "block",
@@ -318,20 +326,22 @@ const Button = styled.button`
   }
 `;
 
-const ImageWrapper = styled.div<{ isFullWidth: boolean }>`
+const ImageWrapper = styled.div<{ isFullWidth: boolean; $dragging: boolean }>`
   line-height: 0;
   position: relative;
   margin-left: auto;
   margin-right: auto;
   max-width: ${(props) => (props.isFullWidth ? "initial" : "100%")};
   transition-property: width, height;
-  transition-duration: ${(props) => (props.isFullWidth ? "0ms" : "150ms")};
+  transition-duration: ${(props) =>
+    props.isFullWidth || props.$dragging ? "0ms" : "150ms"};
   transition-timing-function: ease-in-out;
   overflow: hidden;
 
   img {
     transition-property: width, height;
-    transition-duration: ${(props) => (props.isFullWidth ? "0ms" : "150ms")};
+    transition-duration: ${(props) =>
+      props.isFullWidth || props.$dragging ? "0ms" : "150ms"};
     transition-timing-function: ease-in-out;
   }
 

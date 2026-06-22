@@ -1,6 +1,5 @@
 import { faker } from "@faker-js/faker";
-import isNil from "lodash/isNil";
-import isNull from "lodash/isNull";
+import { isNil, isNull } from "es-toolkit/compat";
 import { Node } from "prosemirror-model";
 import type { InferCreationAttributes } from "sequelize";
 import type { DeepPartial } from "utility-types";
@@ -14,6 +13,7 @@ import {
   ImportState,
   IntegrationService,
   IntegrationType,
+  MentionType,
   NotificationEventType,
   SubscriptionType,
   UserRole,
@@ -24,6 +24,7 @@ import {
   Share,
   Team,
   User,
+  UserPasskey,
   Event,
   Document,
   Emoji,
@@ -48,6 +49,7 @@ import {
   OAuthClient,
   OAuthAuthentication,
   Relationship,
+  Template,
 } from "@server/models";
 import { RelationshipType } from "@server/models/Relationship";
 import AttachmentHelper from "@server/models/helpers/AttachmentHelper";
@@ -430,35 +432,87 @@ export async function buildDocument(
   return document;
 }
 
+export async function buildTemplate(
+  overrides: Omit<Partial<Template>, "collectionId"> & {
+    userId?: string;
+    text?: string;
+    collectionId?: string | null;
+  } = {}
+) {
+  if (!overrides.teamId) {
+    const team = await buildTeam();
+    overrides.teamId = team.id;
+  }
+
+  if (!overrides.userId) {
+    const user = await buildUser({
+      teamId: overrides.teamId,
+    });
+    overrides.userId = user.id;
+  }
+
+  let collection;
+  if (overrides.collectionId === undefined) {
+    collection = await buildCollection({
+      teamId: overrides.teamId,
+      userId: overrides.userId,
+    });
+    overrides.collectionId = collection.id;
+  }
+
+  const text = overrides.text ?? "This is the text in an example template";
+  const template = await Template.create(
+    {
+      title: faker.lorem.words(4),
+      content: overrides.content ?? parser.parse(text)?.toJSON(),
+      lastModifiedById: overrides.userId,
+      createdById: overrides.userId,
+      editorVersion: "12.0.0",
+      ...overrides,
+    },
+    {
+      silent: overrides.createdAt || overrides.updatedAt ? true : false,
+    }
+  );
+
+  return template;
+}
+
 export async function buildComment(overrides: {
   userId: string;
   documentId: string;
   parentCommentId?: string;
   resolvedById?: string;
   reactions?: ReactionSummary[];
+  createdAt?: Date;
 }) {
-  const comment = await Comment.create({
-    resolvedById: overrides.resolvedById,
-    parentCommentId: overrides.parentCommentId,
-    documentId: overrides.documentId,
-    data: {
-      type: "doc",
-      content: [
-        {
-          type: "paragraph",
-          content: [
-            {
-              content: [],
-              type: "text",
-              text: "test",
-            },
-          ],
-        },
-      ],
+  const comment = await Comment.create(
+    {
+      resolvedById: overrides.resolvedById,
+      parentCommentId: overrides.parentCommentId,
+      documentId: overrides.documentId,
+      data: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                content: [],
+                type: "text",
+                text: "test",
+              },
+            ],
+          },
+        ],
+      },
+      createdById: overrides.userId,
+      reactions: overrides.reactions,
+      createdAt: overrides.createdAt,
+      updatedAt: overrides.createdAt,
     },
-    createdById: overrides.userId,
-    reactions: overrides.reactions,
-  });
+    { silent: overrides.createdAt ? true : false }
+  );
 
   return comment;
 }
@@ -522,18 +576,25 @@ export async function buildImport(overrides: Partial<Import<any>> = {}) {
     overrides.integrationId = integration.id;
   }
 
+  // Skip BeforeCreate hooks so tests can seed multiple imports per team. The
+  // production "one in-progress import per team" rule is enforced by the
+  // Import.checkInProgress hook; tests don't need to abide by it.
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  return Import.create<Import<any>>({
-    name: "testImport",
-    service: IntegrationService.Notion,
-    state: ImportState.Created,
-    input: [
-      {
-        permission: CollectionPermission.Read,
-      },
-    ],
-    ...overrides,
-  });
+  return Import.create<Import<any>>(
+    {
+      name: "testImport",
+      service: IntegrationService.Notion,
+      state: ImportState.Created,
+      input: [
+        {
+          permission: CollectionPermission.Read,
+        },
+      ],
+      ...overrides,
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
+    { hooks: false }
+  );
 }
 
 export async function buildAttachment(
@@ -567,7 +628,7 @@ export async function buildAttachment(
     id,
     key: AttachmentHelper.getKey({ id, name, userId: overrides.userId }),
     contentType: "image/png",
-    size: 100,
+    size: 1_000_000,
     acl,
     name,
     createdAt: new Date("2018-01-02T00:00:00.000Z"),
@@ -745,20 +806,28 @@ export async function buildOAuthClient(overrides: Partial<OAuthClient> = {}) {
     overrides.teamId = team.id;
   }
 
-  if (!overrides.createdById) {
+  if (!overrides.createdById && overrides.createdById !== null) {
     const user = await buildUser({
       teamId: overrides.teamId,
     });
     overrides.createdById = user.id;
   }
 
-  return OAuthClient.create({
-    name: faker.company.name(),
-    description: faker.lorem.paragraph(),
-    redirectUris: ["https://example.com/oauth/callback"],
-    published: true,
-    ...overrides,
-  });
+  return OAuthClient.create(
+    {
+      name: faker.company.name(),
+      description: faker.lorem.sentence(),
+      redirectUris: ["https://example.com/oauth/callback"],
+      published: true,
+      ...(overrides.createdAt && !overrides.updatedAt
+        ? { updatedAt: overrides.createdAt }
+        : {}),
+      ...overrides,
+    },
+    {
+      silent: overrides.createdAt || overrides.updatedAt ? true : false,
+    }
+  );
 }
 
 export async function buildOAuthAuthorizationCode(
@@ -849,6 +918,25 @@ export function buildProseMirrorDoc(content: DeepPartial<ProsemirrorData>[]) {
   });
 }
 
+export function buildMention(overrides: {
+  type?: MentionType;
+  modelId: string;
+  actorId: string;
+  label?: string;
+  id?: string;
+}): DeepPartial<ProsemirrorData> {
+  return {
+    type: "mention",
+    attrs: {
+      id: overrides.id ?? randomUUID(),
+      type: overrides.type ?? MentionType.User,
+      label: overrides.label ?? faker.name.fullName(),
+      modelId: overrides.modelId,
+      actorId: overrides.actorId,
+    },
+  };
+}
+
 export function buildCommentMark(overrides: {
   id?: string;
   userId?: string;
@@ -891,6 +979,24 @@ export async function buildRelationship(overrides: Partial<Relationship> = {}) {
 
   return Relationship.create({
     type: RelationshipType.Backlink,
+    ...overrides,
+  });
+}
+
+export async function buildUserPasskey(
+  overrides: Partial<InferCreationAttributes<UserPasskey>> = {}
+) {
+  if (!overrides.userId) {
+    const user = await buildUser();
+    overrides.userId = user.id;
+  }
+
+  return UserPasskey.create({
+    credentialId: randomString(32),
+    credentialPublicKey: Buffer.from(randomString(64)),
+    counter: 0,
+    transports: ["internal"],
+    name: faker.word.noun(),
     ...overrides,
   });
 }

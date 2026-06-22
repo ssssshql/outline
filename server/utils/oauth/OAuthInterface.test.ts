@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { subSeconds } from "date-fns";
 import { Scope } from "@shared/types";
 import { OAuthInterface } from "./OAuthInterface";
+import { OAuthAuthentication } from "@server/models";
 import {
   buildOAuthAuthentication,
   buildOAuthClient,
@@ -86,6 +88,64 @@ describe("OAuthInterface", () => {
     it("should return false for invalid refresh token", async () => {
       const result = await OAuthInterface.getRefreshToken("invalid_token");
       expect(result).toBe(false);
+    });
+
+    it("should revoke the entire grant when a refresh token is reused outside the reuse interval", async () => {
+      const user = await buildUser();
+      const scope = [Scope.Read];
+      const grantId = randomUUID();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+      const rotated = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const sibling = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const refreshToken = rotated.refreshToken!;
+
+      // Simulate a rotation that happened longer ago than the reuse interval.
+      await rotated.destroy();
+      await OAuthAuthentication.update(
+        { deletedAt: subSeconds(new Date(), 60) },
+        { where: { id: rotated.id }, paranoid: false, silent: true }
+      );
+
+      const result = await OAuthInterface.getRefreshToken(refreshToken);
+      expect(result).toBe(false);
+      expect(await OAuthAuthentication.findByPk(sibling.id)).toBeNull();
+    });
+
+    it("should not revoke the grant when a rotated refresh token is replayed within the reuse interval", async () => {
+      const user = await buildUser();
+      const scope = [Scope.Read];
+      const grantId = randomUUID();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+      const rotated = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const sibling = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const refreshToken = rotated.refreshToken!;
+
+      // Simulate a rotation that just happened, as with a concurrent refresh.
+      await rotated.destroy();
+
+      const result = await OAuthInterface.getRefreshToken(refreshToken);
+      expect(result).toBe(false);
+      expect(await OAuthAuthentication.findByPk(sibling.id)).not.toBeNull();
     });
   });
 
@@ -221,6 +281,72 @@ describe("OAuthInterface", () => {
     });
   });
 
+  describe("#saveAuthorizationCode", () => {
+    it("should trim trailing whitespace from codeChallengeMethod", async () => {
+      const user = await buildUser();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+
+      const code = {
+        authorizationCode: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        redirectUri: oAuthClient.redirectUris[0],
+        scope: [Scope.Read],
+        codeChallenge: "abc123",
+        codeChallengeMethod: "S256  ",
+      };
+
+      await OAuthInterface.saveAuthorizationCode(
+        code,
+        {
+          id: oAuthClient.clientId,
+          databaseId: oAuthClient.id,
+          grants: OAuthInterface.grants,
+        },
+        user
+      );
+
+      const result = await OAuthInterface.getAuthorizationCode(
+        code.authorizationCode
+      );
+      expect(result).not.toBe(false);
+      if (result) {
+        expect(result.codeChallengeMethod).toBe("S256");
+      }
+    });
+
+    it("should treat whitespace-only codeChallengeMethod as absent", async () => {
+      const user = await buildUser();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+
+      const code = {
+        authorizationCode: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        redirectUri: oAuthClient.redirectUris[0],
+        scope: [Scope.Read],
+        codeChallenge: undefined,
+        codeChallengeMethod: "   ",
+      };
+
+      await OAuthInterface.saveAuthorizationCode(
+        code,
+        {
+          id: oAuthClient.clientId,
+          databaseId: oAuthClient.id,
+          grants: OAuthInterface.grants,
+        },
+        user
+      );
+
+      const result = await OAuthInterface.getAuthorizationCode(
+        code.authorizationCode
+      );
+      expect(result).not.toBe(false);
+      if (result) {
+        expect(result.codeChallengeMethod).toBeNull();
+      }
+    });
+  });
+
   describe("#validateScope", () => {
     it("should return empty array for empty scope", async () => {
       const result = await OAuthInterface.validateScope(user, client, []);
@@ -279,6 +405,19 @@ describe("OAuthInterface", () => {
     it("should reject malformed access scopes", async () => {
       const scope = ["documents::read"];
       const result = await OAuthInterface.validateScope(user, client, scope);
+      expect(result).toBe(false);
+    });
+
+    it("should reject if any requested scope is invalid", async () => {
+      const scope = [Scope.Read, "*"];
+      const result = await OAuthInterface.validateScope(user, client, scope);
+      expect(result).toBe(false);
+    });
+
+    it("should reject root wildcard route scopes", async () => {
+      const result = await OAuthInterface.validateScope(user, client, [
+        "/api/*.*",
+      ]);
       expect(result).toBe(false);
     });
   });

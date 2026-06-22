@@ -1,8 +1,9 @@
 // oxlint-disable-next-line import/no-unresolved
 import "vite/modulepreload-polyfill";
-import { LazyMotion } from "framer-motion";
+import { LazyMotion, domMax } from "framer-motion";
 import { KBarProvider } from "kbar";
 import { Provider } from "mobx-react";
+import { configure as configureMobx } from "mobx";
 import { StrictMode } from "react";
 import { render } from "react-dom";
 import { HelmetProvider } from "react-helmet-async";
@@ -10,6 +11,7 @@ import { Router } from "react-router-dom";
 import stores from "~/stores";
 import Analytics from "~/components/Analytics";
 import Dialogs from "~/components/Dialogs";
+import Presentation from "~/components/Presentation";
 import ErrorBoundary from "~/components/ErrorBoundary";
 import PageTheme from "~/components/PageTheme";
 import ScrollToTop from "~/components/ScrollToTop";
@@ -37,8 +39,12 @@ if (env.SENTRY_DSN) {
   initSentry(history);
 }
 
-// Make sure to return the specific export containing the feature bundle.
-const loadFeatures = () => import("./utils/motion").then((res) => res.default);
+configureMobx({
+  // TODO: Enable these options and fix any resulting warnings
+  // enforceActions: env.isDevelopment ? "always" : "never",
+  computedRequiresReaction: true,
+  isolateGlobalState: true,
+});
 
 const commandBarOptions = {
   animations: {
@@ -51,7 +57,7 @@ if (element) {
   const App = () => (
     <StrictMode>
       <HelmetProvider>
-        <Provider {...stores}>
+        <Provider rootStore={stores}>
           <Analytics>
             <Router history={history}>
               <Theme>
@@ -59,7 +65,7 @@ if (element) {
                   <ErrorBoundary showTitle>
                     <KBarProvider actions={[]} options={commandBarOptions}>
                       <LazyPolyfill>
-                        <LazyMotion features={loadFeatures}>
+                        <LazyMotion features={domMax}>
                           <PageScroll>
                             <PageTheme />
                             <ScrollToTop>
@@ -67,6 +73,7 @@ if (element) {
                             </ScrollToTop>
                             <Toasts />
                             <Dialogs />
+                            <Presentation />
                             <Desktop />
                           </PageScroll>
                         </LazyMotion>
@@ -91,8 +98,7 @@ window.addEventListener("load", async () => {
   if (!env.GOOGLE_ANALYTICS_ID || !window.ga) {
     return;
   }
-  // https://github.com/googleanalytics/autotrack/issues/137#issuecomment-305890099
-  await import("autotrack/autotrack.js");
+  await import("~/utils/autotrack");
   window.ga("require", "outboundLinkTracker");
   window.ga("require", "urlChangeTracker");
   window.ga("require", "eventTracker", {

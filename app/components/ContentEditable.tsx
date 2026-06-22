@@ -87,22 +87,23 @@ const ContentEditable = React.forwardRef(function ContentEditable_(
   }));
 
   const wrappedEvent =
-    (
-      callback:
-        | React.FocusEventHandler<HTMLSpanElement>
-        | React.FormEventHandler<HTMLSpanElement>
-        | React.KeyboardEventHandler<HTMLSpanElement>
-        | undefined
+    <E extends React.SyntheticEvent<HTMLSpanElement>>(
+      callback: ((event: E) => void) | undefined
     ) =>
-    (event: any) => {
+    (event: E) => {
       if (readOnly) {
         return;
       }
 
       const text = event.currentTarget.textContent || "";
 
-      if (maxLength && isPrintableKeyEvent(event) && text.length >= maxLength) {
-        event?.preventDefault();
+      if (
+        maxLength &&
+        event.nativeEvent instanceof KeyboardEvent &&
+        isPrintableKeyEvent(event.nativeEvent) &&
+        text.length >= maxLength
+      ) {
+        event.preventDefault();
         return;
       }
 
@@ -128,7 +129,14 @@ const ContentEditable = React.forwardRef(function ContentEditable_(
 
   React.useEffect(() => {
     if (contentRef.current && value !== contentRef.current.textContent) {
-      setInnerValue(value);
+      if (document.activeElement === contentRef.current) {
+        // Don't reset content while the user is actively editing. Update
+        // lastValue so that the next input or blur event will push the
+        // current DOM text back to the model via onChange.
+        lastValue.current = value;
+      } else {
+        setInnerValue(value);
+      }
     }
   }, [value, contentRef]);
 

@@ -4,8 +4,10 @@ import presentAuthenticationProvider from "./authenticationProvider";
 import presentAvailableTeam from "./availableTeam";
 import presentCollection from "./collection";
 import presentComment from "./comment";
-import presentDocument from "./document";
+import presentDocument, { presentDocuments } from "./document";
+import presentDocumentInsight from "./documentInsight";
 import presentEvent from "./event";
+import presentExternalGroup from "./externalGroup";
 import presentFileOperation from "./fileOperation";
 import presentGroup from "./group";
 import presentGroupMembership from "./groupMembership";
@@ -13,6 +15,7 @@ import presentGroupUser from "./groupUser";
 import presentImport from "./import";
 import presentIntegration from "./integration";
 import presentMembership from "./membership";
+import presentNavigationNode from "./navigationNode";
 import presentOAuthClient, { presentPublishedOAuthClient } from "./oauthClient";
 import presentPin from "./pin";
 import presentPolicies from "./policy";
@@ -26,9 +29,11 @@ import presentShare from "./share";
 import presentStar from "./star";
 import presentSubscription from "./subscription";
 import presentTeam from "./team";
+import presentTemplate from "./template";
 import presentUser from "./user";
 import presentView from "./view";
 import presentEmoji from "./emoji";
+import presentAccessRequest from "./accessRequest";
 
 export {
   presentApiKey,
@@ -38,7 +43,10 @@ export {
   presentCollection,
   presentComment,
   presentDocument,
+  presentDocuments,
+  presentDocumentInsight,
   presentEvent,
+  presentExternalGroup,
   presentFileOperation,
   presentGroup,
   presentGroupUser,
@@ -46,6 +54,7 @@ export {
   presentImport,
   presentIntegration,
   presentMembership,
+  presentNavigationNode,
   presentOAuthClient,
   presentPublishedOAuthClient,
   presentPublicTeam,
@@ -60,7 +69,9 @@ export {
   presentStar,
   presentSubscription,
   presentTeam,
+  presentTemplate,
   presentUser,
   presentView,
   presentEmoji,
+  presentAccessRequest,
 };
